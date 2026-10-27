@@ -7,7 +7,7 @@ Run from the repo root::
 import pathlib
 import unittest
 
-from _support import cp
+from _support import config as cp
 
 URL, MAIL, TOK = cp.CRED_VARS
 

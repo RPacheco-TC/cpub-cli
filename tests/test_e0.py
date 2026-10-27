@@ -7,7 +7,7 @@ Run from the repo root::
 import json
 import unittest
 
-from _support import cp
+from _support import api, plan as cp
 from _fake_confluence import FakeConfluence, installed
 
 TODAY = "2026-10-27"
@@ -200,7 +200,7 @@ class WhoAmI(unittest.TestCase):
     def call(self, user):
         f = tree(); f.user = user
         with installed(f):
-            out = cp.whoami()
+            out = api.whoami()
         self.assertEqual(f.calls, [("GET", "/rest/api/user/current")])    # one read, no writes
         return out
 
@@ -219,8 +219,8 @@ class WhoAmI(unittest.TestCase):
 
     def test_other_errors_propagate(self):
         f = tree(); f.user = 500
-        with installed(f), self.assertRaises(cp.urllib.error.HTTPError):
-            cp.whoami()
+        with installed(f), self.assertRaises(api.urllib.error.HTTPError):
+            api.whoami()
 
 
 class VersionRace(unittest.TestCase):

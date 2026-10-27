@@ -17,7 +17,7 @@ The Markdown is the source of truth; Confluence is a derived view you can re-pub
 | ---- | --- | ----- |
 | **Python 3.12+** | Publishing | Standard library only; no `pip install` required. Check with `python3 --version`. macOS's built-in `python3` is 3.9 — install a newer one with `brew install python@3.12` and run the tool as `python3.12`. |
 | **Node.js + `npx`** | Diagrams | Used to render Mermaid diagrams to PNG (`@mermaid-js/mermaid-cli`, fetched on first use). Optional — without it, diagrams fall back to a code block. |
-| **Claude Code** | Generating | Only needed for stage 1. See [`GUIDE.md`](GUIDE.md). |
+| **Claude Code** | Generating | Only needed for stage 1. See [`docs/GUIDE.md`](docs/GUIDE.md). |
 | **Obsidian** | Reading/editing | The generated docs use Obsidian wikilinks and Mermaid. Free from <https://obsidian.md>. |
 | **A Confluence Cloud account + API token** | Publishing | Token: <https://id.atlassian.com/manage-profile/security/api-tokens> |
 
@@ -28,16 +28,18 @@ The Markdown is the source of truth; Confluence is a derived view you can re-pub
 | File | What it is |
 | ---- | ---------- |
 | `template.yaml` | The doc-set spec the generator follows (universal sections + per-repo "In Situ" deep-dives, adapted to the repo's archetype). |
-| `GUIDE.md` | Step-by-step walkthrough for stage 1 (generate docs with your own Claude). |
-| `confluence_publish.py` | The publisher (stage 2). A self-contained CLI. |
-| `md_to_confluence.py` | Markdown → Confluence-storage conversion library used by the publisher. |
+| `docs/GUIDE.md` | Step-by-step walkthrough: generate docs with your own Claude, then publish them. |
+| `docs/KNOWN_ISSUES.md` | Known limitations, their causes and workarounds. |
+| `confluence_publish.py` | The publisher's entry point (stage 2): `python3.12 confluence_publish.py …`. A thin wrapper around the package below. |
+| `confluence_publisher/` | The publisher itself, standard library only: command line, credentials, Confluence REST client, the safety plan, and the Markdown → Confluence conversion. Also runs as `python3.12 -m confluence_publisher …`. |
+| `tests/` | Offline test suite (`python3.12 -B -m unittest discover -s tests`). |
 | `.env.example` | Template for the three credentials (copy to `.env`). |
 
 ---
 
 ## Stage 1 — Generate the docs
 
-Full instructions are in [`GUIDE.md`](GUIDE.md). In short: open Claude Code in your repo, paste the generation prompt from the guide (with `template.yaml`), and it writes a folder like:
+Full instructions are in [`docs/GUIDE.md`](docs/GUIDE.md). In short: open Claude Code in your repo, paste the generation prompt from the guide (with `template.yaml`), and it writes a folder like:
 
 ```
 my-repo-docs/
@@ -194,7 +196,7 @@ If you prefer the python.org build, fix it once by installing its CA bundle (rep
 Verify with: `python3 -c "import urllib.request; urllib.request.urlopen('https://www.atlassian.com'); print('TLS OK')"`. Do **not** work around this by disabling certificate verification — that removes the security the check provides.
 
 **Mermaid diagrams show "Preview not available" in Confluence edit mode.**
-(and vanish after you save from the editor). Pages published by older versions of this tool saved the page body *before* uploading its diagrams, so Confluence never linked the images to their attachments; view mode hides this, the editor does not. Current versions upload first. **Fix an affected page by re-running the same publish command once** — the UPDATE re-saves the body after the attachments exist, which links them. If a diagram already vanished after an editor save, the re-publish restores it from the Markdown. See `KNOWN_ISSUES.md` for details.
+(and vanish after you save from the editor). Pages published by older versions of this tool saved the page body *before* uploading its diagrams, so Confluence never linked the images to their attachments; view mode hides this, the editor does not. Current versions upload first. **Fix an affected page by re-running the same publish command once** — the UPDATE re-saves the body after the attachments exist, which links them. If a diagram already vanished after an editor save, the re-publish restores it from the Markdown. See [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md) for details.
 
 ## Status and roadmap
 

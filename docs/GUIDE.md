@@ -26,7 +26,7 @@ The document set adapts to your repo automatically:
 | ----- | --- | ------------- |
 | **Claude Code** | This is the version of Claude that can read your files and write documents. Plain chat on the website cannot read a repository directly. | Install from <https://claude.com/claude-code>, then sign in. |
 | **A repository to document** | The code Claude will read. Have it cloned locally. | Any local folder with code. |
-| **`template.yaml`** | The recipe Claude follows. | Copy the `template.yaml` file from this folder to somewhere you can find it (for example, into your repo, or your home folder). |
+| **`template.yaml`** | The recipe Claude follows. | Copy [`template.yaml`](../template.yaml) from the root of this repository to somewhere you can find it (for example, into your repo, or your home folder). |
 | **Obsidian** | The app you read the result in. The documents use Obsidian-style links and diagrams. | Free download from <https://obsidian.md>. |
 
 > [!tip] You do not need a database, a frontend, or any particular language.

@@ -147,7 +147,7 @@ XML tags; the `<ac:link>` markup produced a mismatched-tag error that failed
 First encountered with a RabbitMQ document that had a `[[wikilink]]` example
 inside a code fence.
 
-### Fix — merged in [PR #1](../../pull/1) (2026-07-01)
+### Fix — merged in [PR #1](https://github.com/RPacheco-TC/obx-confluence-obsidian-publisher/pull/1) (2026-07-01)
 
 `_extract_wikilinks` in `confluence_publish.py` now iterates line-by-line,
 tracking an `in_fence` boolean that flips on/off at each ` ``` ` boundary. Lines
@@ -165,7 +165,7 @@ substitution as before.
   the XML stayed valid). Fixed: all three extractors now share one fence rule
   (`_is_fence`) and leave fenced lines untouched; covered by regression tests.
 - [x] ~~Handle tilde fences (`~~~`) and 4-space indented code blocks~~ —
-  **won't fix.** `md_to_confluence.py` does not treat either style as code at
+  **won't fix.** `confluence_publisher/markdown_html.py` (formerly `md_to_confluence.py`) does not treat either style as code at
   all (no `<pre><code>`, no CDATA), so a wikilink inside one becomes a normal
   link and cannot break XML. Supporting them would be a converter feature, not
   a fix to this bug.

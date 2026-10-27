@@ -18,7 +18,7 @@ import types
 import unittest
 import urllib.error
 
-from _support import cp, ROOT
+from _support import cli as cp, plan, ROOT
 
 DOCS = str(ROOT / "tests")          # a real folder with no .md files
 BASE = "https://example.invalid/wiki"
@@ -508,11 +508,13 @@ class EndToEnd(unittest.TestCase):
     def main(self, *extra, tty=False, answer=None, on_ask=None):
         from _fake_confluence import installed
         prompts, out = [], io.StringIO()
-        patches = {"read_doc_set": lambda d: self.DOCS, "resolve_space_id": lambda k: "S1",
+        patches = {"resolve_space_id": lambda k: "S1",
                    "load_env": lambda *a, **k: {}, "_stdin_is_tty": lambda: tty,
                    "_ask": lambda p: prompts.append(p) or (on_ask and on_ask()) or answer}
         saved = {n: getattr(cp, n) for n in patches}
+        saved_read = plan.read_doc_set                    # looked up by plan.build_plan
         try:
+            plan.read_doc_set = lambda d: self.DOCS
             for n, fn in patches.items():
                 setattr(cp, n, fn)
             with environ(CREDS), installed(self.f):
@@ -522,6 +524,7 @@ class EndToEnd(unittest.TestCase):
                 except SystemExit as e:
                     return e.code, out.getvalue(), prompts
         finally:
+            plan.read_doc_set = saved_read
             for n, fn in saved.items():
                 setattr(cp, n, fn)
 

@@ -10,7 +10,7 @@ import io
 import os
 import unittest
 
-from _support import cp
+from _support import cli as cp, pkg
 import _support
 
 ARGS = ["docs", "--space", "X", "--parent", "1", "--dry-run"]
@@ -99,7 +99,7 @@ class PythonVersionGuard(unittest.TestCase):
         for v in ((3, 9, 6), (3, 11, 9)):
             with self.subTest(version=v):
                 with self.assertRaises(SystemExit) as ctx:
-                    cp._check_python(v)
+                    pkg._check_python(v)
                 msg = str(ctx.exception.code)
                 self.assertIn("Python 3.12+", msg)
                 self.assertIn("found %d.%d.%d" % v, msg)
@@ -108,7 +108,7 @@ class PythonVersionGuard(unittest.TestCase):
     def test_accepts_supported(self):
         for v in ((3, 12, 0), (3, 13, 0)):
             with self.subTest(version=v):
-                self.assertIsNone(cp._check_python(v))
+                self.assertIsNone(pkg._check_python(v))
 
 
 class SingleLoad(unittest.TestCase):

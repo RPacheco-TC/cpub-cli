@@ -83,7 +83,7 @@ meta:
     prose: "Write in FULL FORMS, never contractions: 'it is' not 'it's', 'you are' not 'you're', 'does not' not 'doesn't', 'cannot' not 'can't', 'will not' not 'won't'."
   excluded_from_publish:
     # Non-published material lives here and the converter skips it
-    # (md_to_confluence.py exclude `("extra",)`). Out of generation too.
+    # (confluence_publisher/markdown_html.py exclude `("extra",)`). Out of generation too.
     subfolder: extra
     examples: [Requirements.md, Production Considerations, to-UX screenshot guide]
 

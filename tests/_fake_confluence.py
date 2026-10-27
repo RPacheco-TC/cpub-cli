@@ -10,7 +10,7 @@ import json
 import urllib.error
 import urllib.parse
 
-from _support import cp
+from _support import api, plan
 
 BASE = "https://example.invalid/wiki"
 
@@ -132,12 +132,14 @@ class FakeConfluence:
 @contextlib.contextmanager
 def installed(fake):
     """Route the publisher's REST layer to ``fake`` for the duration of the block."""
-    saved = {n: getattr(cp, n) for n in ("_req", "_cfg", "upload_attachment")}
-    cp._req = fake.req
-    cp._cfg = lambda: (BASE, "x@example.invalid", "token")
-    cp.upload_attachment = fake.upload
+    targets = [(api, "_req", fake.req),                                   # looked up by every api call
+               (api, "_cfg", lambda: (BASE, "x@example.invalid", "token")),
+               (plan, "upload_attachment", fake.upload)]                   # looked up by plan's writer
+    saved = [(m, n, getattr(m, n)) for m, n, _ in targets]
+    for m, n, f in targets:
+        setattr(m, n, f)
     try:
         yield fake
     finally:
-        for n, f in saved.items():
-            setattr(cp, n, f)
+        for m, n, f in saved:
+            setattr(m, n, f)

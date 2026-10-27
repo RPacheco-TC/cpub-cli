@@ -1,23 +1,27 @@
-"""Shared test fixture: load ``confluence_publish.py`` exactly once per run.
+"""Shared test fixture: import the ``confluence_publisher`` package exactly once per run.
 
-Every test module imports ``cp`` from here. Python caches this module in
-``sys.modules``, so the CLI module (and the ``md_to_confluence.py`` it loads)
-is executed a single time however many test modules use it.
+Test modules import the submodule they exercise from here (``from _support
+import plan as cp``). Python caches the package in ``sys.modules``, so it is
+executed a single time however many test modules use it. Patch a function in
+the module that *looks it up* (e.g. ``plan.create_page``, ``cli.load_env``,
+``api._req``): each module imports the names it calls.
 """
-import importlib.util
 import pathlib
+import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-LOADS = 0  # how many times confluence_publish.py was executed; asserted to be 1
+LOADS = 0  # how many times the package was executed; asserted to be 1
 
 
 def _load():
     global LOADS
-    spec = importlib.util.spec_from_file_location("confluence_publish", ROOT / "confluence_publish.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    LOADS += 1
-    return module
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    fresh = "confluence_publisher" not in sys.modules
+    import confluence_publisher.cli  # loads every submodule
+    LOADS += fresh
+    return confluence_publisher
 
 
-cp = _load()
+pkg = _load()
+from confluence_publisher import api, cli, config, errors, markdown_html, plan, storage  # noqa: E402

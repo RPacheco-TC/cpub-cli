@@ -7,7 +7,7 @@ Run from the repo root::
 import contextlib
 import unittest
 
-from _support import cp
+from _support import plan as cp
 
 ATTS = [("mermaid_aaa.png", "/x/aaa.png"), ("mermaid_bbb.png", "/x/bbb.png")]
 

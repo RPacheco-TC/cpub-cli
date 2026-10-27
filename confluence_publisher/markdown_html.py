@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Markdown-to-Confluence storage-format conversion helpers.
 
-A library of pure functions used by :mod:`confluence_publish` to turn
+A library of pure functions used by :mod:`.storage` to turn
 Obsidian-style Markdown into Confluence-compatible HTML: inline formatting,
 tables, lists, callouts, code, and Mermaid rendering (via
 ``npx @mermaid-js/mermaid-cli``).

@@ -6,7 +6,7 @@ Run from the repo root (offline: no network, no npx, no Confluence env vars)::
 """
 import unittest
 
-from _support import cp
+from _support import storage as cp
 
 
 def storage(md: str, **kw) -> str:
