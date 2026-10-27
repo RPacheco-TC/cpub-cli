@@ -29,8 +29,15 @@ python3 confluence_publish.py DOCS_DIR --space KEY --parent PAGE_ID --prefix REP
 - `--parent` must be a real **page** id, never a folder — the v2 API does not reliably publish under folders.
 - `--prefix` is required in practice when several repos share one space, because Confluence titles must be unique *within a space*.
 - `--img-dir` overrides where Mermaid PNGs are rendered; it defaults to `<docs_dir>/.img` (gitignored, regenerated each publish).
+- `--img-width PX` (optional) sets `ac:width` on every Mermaid `ac:image`; unset means no attribute, i.e. unchanged output.
 
-There is **no build, no linter, no test suite, and no dependency install** — pure Python 3.9+ standard library. The only external runtime dependency is `npx`/Node (for `@mermaid-js/mermaid-cli`), used solely to render Mermaid to PNG; without it diagrams fall back to a styled code block. Target Python 3.9 specifically (the `from __future__ import annotations` at the top of both modules exists so `X | None` / `tuple[...]` annotations parse on 3.9).
+```bash
+# Regression tests — stdlib unittest, in-process and offline (no network, no npx,
+# no Confluence env vars, no child processes); -B keeps it from writing __pycache__
+python3.12 -B -m unittest discover -s tests
+```
+
+There is **no build, no linter, and no dependency install** — pure Python 3.12+ standard library; the only tests are the stdlib `unittest` suite in `tests/` (they load `confluence_publish.py` once via `tests/_support.py` and test the CLI through `build_parser()` / `main(argv)` — keep them free of subprocesses and temp files). The only external runtime dependency is `npx`/Node (for `@mermaid-js/mermaid-cli`), used solely to render Mermaid to PNG; without it diagrams fall back to a styled code block. The minimum is **Python 3.12**: `_check_python()` near the top of `confluence_publish.py` exits with a one-line message on older interpreters. It must run *before* `md_to_confluence.py` is loaded and before any annotated `def`, because `X | None` annotations are evaluated at definition time — so keep the code above it parseable by old Pythons. On macOS the system `python3` is 3.9; use `python3.12` (Homebrew).
 
 ## Architecture: the conversion pipeline
 
@@ -68,7 +75,7 @@ Mermaid rendering is driven by **module-level globals** in `md_to_confluence.py`
 - **Idempotency is by exact title match**, not a stored page map. `find_page_id_by_title` pages through *all* results (following `_links.next`), so re-publishing reliably UPDATEs rather than spuriously CREATEs. Re-running after editing Markdown is safe.
 - **Never deletes; only creates/updates under the `--parent` you pass.** This is the core safety property — do not add deletion without an explicit opt-in flag (a `--prune` is listed as a deliberately-unimplemented future option).
 - **Layout:** top-level `NN - Title.md` files become children of the parent; an `In Situ/` subfolder (matched case-insensitively via `find_insitu_dir`) becomes an `In Situ` container page with the deep-dives beneath it.
-- **Attachments** (rendered Mermaid PNGs) are content-hash-named and uploaded only *after* the page exists; `existing_attachment_names` skips names already present, since re-uploading a duplicate filename returns HTTP 400.
+- **Attachments** (rendered Mermaid PNGs) are content-hash-named; `existing_attachment_names` skips names already present, since re-uploading a duplicate filename returns HTTP 400. **They must be uploaded *before* the body that references them is saved:** Confluence links each `ri:attachment` at save time (`ri:version-at-save`), and an unlinked reference renders in view mode but shows "Preview not available" in the editor and is dropped on the user's next save. So UPDATE uploads then saves; CREATE (the page must exist to take attachments) creates, uploads, then saves the body again. `tests/test_publish_order.py` pins this order.
 - **Pre-flight duplicate check:** `main()` rejects a doc set with two files resolving to the same title *before* contacting Confluence, naming the colliding files.
 - REST uses the **v2 API** for pages/spaces/attachments-listing, but the **v1 endpoint** for attachment *upload* (multipart). `_req` stashes Confluence's real error body on `HTTPError.detail` so `main()` can print the actual reason (v2's bare "HTTP Error 400" otherwise hides it).
 
@@ -84,7 +91,7 @@ These shape the Markdown the publisher consumes, so they matter when debugging "
 
 ## Operational gotchas
 
-- **macOS `ssl.SSLCertVerificationError: CERTIFICATE_VERIFY_FAILED` on publish.** Affects the **python.org** Python build (Apple's `/usr/bin/python3` is fine), which ships a CA bundle that isn't installed by default. Fix once by running the bundled `/Applications/Python 3.x/Install Certificates.command` (or `pip install --upgrade certifi` for that interpreter). Do **not** work around it by disabling certificate verification — that removes the security the check provides. See README troubleshooting.
+- **macOS `ssl.SSLCertVerificationError: CERTIFICATE_VERIFY_FAILED` on publish.** Affects the **python.org** Python build, which ships a CA bundle that isn't installed by default (Homebrew's `python@3.12` works out of the box; Apple's `/usr/bin/python3` is 3.9 and no longer supported). Fix once by running the bundled `/Applications/Python 3.x/Install Certificates.command` (or `pip install --upgrade certifi` for that interpreter). Do **not** work around it by disabling certificate verification — that removes the security the check provides. See README troubleshooting.
 - **A `400` only ever surfaces on the real publish, never on `--dry-run`** (the dry-run never exercises the write path). The usual causes are a duplicate title in the space (use a distinct `--prefix`) or a `--parent` that is a folder, or a page in a different space than `--space`.
 
 ## Do not touch the project `.gitignore` for tooling/personal files

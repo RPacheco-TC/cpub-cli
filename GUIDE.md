@@ -162,7 +162,7 @@ my-repo-docs/
 Once you have reviewed the generated docs, you can publish them to Confluence Cloud as a page tree. This stage is separate from generation: you can publish, edit the Markdown later, and re-publish, as often as you like.
 
 ### What you need to publish
-- **Python 3.9+** (no extra packages to install).
+- **Python 3.12+** (no extra packages to install). On macOS the built-in `python3` is 3.9: `brew install python@3.12` and run `python3.12`.
 - **Node.js / `npx`** — only if your docs contain Mermaid diagrams, which get rendered to images. Optional otherwise.
 - A **Confluence Cloud account** and an **API token** — create one at <https://id.atlassian.com/manage-profile/security/api-tokens>.
 

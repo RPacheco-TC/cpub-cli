@@ -15,7 +15,7 @@ The Markdown is the source of truth; Confluence is a derived view you can re-pub
 
 | Tool | For | Notes |
 | ---- | --- | ----- |
-| **Python 3.9+** | Publishing | Standard library only; no `pip install` required. |
+| **Python 3.12+** | Publishing | Standard library only; no `pip install` required. Check with `python3 --version`. macOS's built-in `python3` is 3.9 — install a newer one with `brew install python@3.12` and run the tool as `python3.12`. |
 | **Node.js + `npx`** | Diagrams | Used to render Mermaid diagrams to PNG (`@mermaid-js/mermaid-cli`, fetched on first use). Optional — without it, diagrams fall back to a code block. |
 | **Claude Code** | Generating | Only needed for stage 1. See [`GUIDE.md`](GUIDE.md). |
 | **Obsidian** | Reading/editing | The generated docs use Obsidian wikilinks and Mermaid. Free from <https://obsidian.md>. |
@@ -99,6 +99,8 @@ python3 confluence_publish.py my-repo-docs --space DOCS --parent 123456789 --pre
 
 The tool prints a per-page plan (`CREATE` / `UPDATE`, with the actual prefixed titles) and how many diagrams each page carries. Re-running updates the same pages in place (matched by title), so it is safe to run repeatedly.
 
+Optional: `--img-width <px>` sets a display width on every Mermaid diagram (e.g. `--img-width 700`), so diagrams rarely need resizing in the Confluence editor (see [Troubleshooting](#troubleshooting)). Without it, diagrams keep their natural size and the output is unchanged.
+
 ### What it produces
 
 - The numbered docs become child pages of your parent page.
@@ -130,18 +132,33 @@ The dry-run never exercises the write path, so a problem only surfaces on the re
 - **Duplicate page title.** Titles must be unique within a space (see [step 3](#3-pick-a-unique-prefix-when-sharing-a-space)). Publish each repo with a distinct `--prefix`. If two files *in your own doc set* collide, the tool stops before contacting Confluence and names the file to rename.
 - **`--parent` is not a page in that space.** The parent must be a real **page** (URL shape `…/pages/<id>/<slug>`), and it must live in the `--space` you passed — not a folder, and not a page in another space.
 
-**`ssl.SSLCertVerificationError: CERTIFICATE_VERIFY_FAILED` on macOS.**
-This happens with the **python.org** build of Python, which ships its own CA bundle that isn't installed by default (Apple's `/usr/bin/python3` is unaffected). Fix it once:
+**`confluence_publish requires Python 3.12+ (found 3.9.6)`.**
+The interpreter is too old — on macOS, plain `python3` is Apple's 3.9. Install a supported one and use it explicitly:
 
 ```bash
-# Run the installer that ships with python.org Python (adjust the version):
-/Applications/Python\ 3.12/Install\ Certificates.command
+brew install python@3.12
+python3.12 confluence_publish.py my-repo-docs --space DOCS --parent 123456789 --prefix langflow --dry-run
+```
+
+**`ssl.SSLCertVerificationError: CERTIFICATE_VERIFY_FAILED` on macOS.**
+This happens with the **python.org** build of Python, which ships its own CA bundle that isn't installed by default.
+
+Quickest fix — use Homebrew's Python (`brew install python@3.12`, then `python3.12 …`), which works with HTTPS out of the box.
+
+If you prefer the python.org build, fix it once by installing its CA bundle (replace `3.x` with your version, 3.12 or newer):
+
+```bash
+# Run the installer that ships with python.org Python:
+/Applications/Python\ 3.x/Install\ Certificates.command
 
 # …or, equivalently:
-/Library/Frameworks/Python.framework/Versions/3.12/bin/python3 -m pip install --upgrade certifi
+/Library/Frameworks/Python.framework/Versions/3.x/bin/python3 -m pip install --upgrade certifi
 ```
 
 Verify with: `python3 -c "import urllib.request; urllib.request.urlopen('https://www.atlassian.com'); print('TLS OK')"`. Do **not** work around this by disabling certificate verification — that removes the security the check provides.
+
+**Mermaid diagrams show "Preview not available" in Confluence edit mode.**
+(and vanish after you save from the editor). Pages published by older versions of this tool saved the page body *before* uploading its diagrams, so Confluence never linked the images to their attachments; view mode hides this, the editor does not. Current versions upload first. **Fix an affected page by re-running the same publish command once** — the UPDATE re-saves the body after the attachments exist, which links them. If a diagram already vanished after an editor save, the re-publish restores it from the Markdown. See `KNOWN_ISSUES.md` for details.
 
 ## Status and roadmap
 

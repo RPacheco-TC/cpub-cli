@@ -6,13 +6,9 @@ Obsidian-style Markdown into Confluence-compatible HTML: inline formatting,
 tables, lists, callouts, code, and Mermaid rendering (via
 ``npx @mermaid-js/mermaid-cli``).
 
-:requires: Python 3.9+, and ``npx`` on ``PATH`` for Mermaid rendering (optional;
+:requires: Python 3.12+, and ``npx`` on ``PATH`` for Mermaid rendering (optional;
     falls back to a styled block when unavailable).
 """
-
-from __future__ import annotations  # PEP 563: defer annotation eval so the
-# `X | None` / `tuple[str, ...]` syntax below also runs on Python 3.9 (the
-# system interpreter on this machine), not just the documented 3.10+.
 
 import re
 import os

@@ -43,11 +43,34 @@ Credentials are read from the environment only (never commit them):
    matches by title), content-hash skip of unchanged pages, exact heading-anchor
    links, and ``--prune`` of pages whose source was removed.
 """
-from __future__ import annotations
-import os, re, json, base64, importlib.util, pathlib, argparse
+import os, re, sys, json, base64, importlib.util, pathlib, argparse
 import html as ihtml
 import urllib.request, urllib.error, urllib.parse
 import xml.etree.ElementTree as ET
+
+# --- interpreter guard -------------------------------------------------------
+# Must run before md_to_confluence.py is loaded and before any annotated def:
+# both use 3.10+ annotation syntax evaluated at definition time, so an older
+# interpreter would otherwise die with a TypeError traceback. Keep everything
+# above this point parseable by old Pythons so the user gets this one line.
+MIN_PYTHON = (3, 12)
+
+
+def _check_python(version_info=None):
+    """Exit with a one-line message when the interpreter is older than :data:`MIN_PYTHON`.
+
+    :param version_info: version to check (``sys.version_info`` when ``None``);
+        injectable so tests can exercise the guard without another interpreter.
+    :raises SystemExit: if the version is below the minimum.
+    """
+    v = sys.version_info if version_info is None else version_info
+    if tuple(v[:2]) < MIN_PYTHON:
+        raise SystemExit(
+            "confluence_publish requires Python %d.%d+ (found %d.%d.%d)"
+            % (MIN_PYTHON + tuple(v[:3])))
+
+
+_check_python()
 
 HERE = pathlib.Path(__file__).resolve().parent
 
@@ -74,6 +97,24 @@ CALLOUT_MACRO = {
 _CALLOUT_RE = re.compile(r"^>\s*\[!(\w+)\][+-]?\s*(.*)$")
 
 
+def _is_fence(line: str) -> bool:
+    """Return whether ``line`` opens or closes a fenced code block.
+
+    The single fence rule shared by every pre-conversion extractor
+    (:func:`_extract_toc`, :func:`_extract_wikilinks`, :func:`_extract_callouts`),
+    so they agree on what is code. Content inside a fence is source text, not
+    document structure: swapping it for a placeholder token would leave the
+    token in the published code block, because the post-conversion restore
+    never matches inside ``<pre><code>``. Only backtick fences count — the bulk
+    converter does not treat ``~~~`` or indented blocks as code either.
+
+    :param line: one line of Markdown (a trailing newline is allowed).
+    :type line: str
+    :rtype: bool
+    """
+    return line.lstrip().startswith("```")
+
+
 def _extract_callouts(md: str):
     """Pull callout blocks out of the Markdown.
 
@@ -89,8 +130,12 @@ def _extract_callouts(md: str):
     """
     lines = md.split("\n")
     out, macros, i = [], {}, 0
+    in_fence = False
     while i < len(lines):
-        m = _CALLOUT_RE.match(lines[i])
+        if _is_fence(lines[i]):
+            in_fence = not in_fence
+            out.append(lines[i]); i += 1; continue
+        m = None if in_fence else _CALLOUT_RE.match(lines[i])
         if not m:
             out.append(lines[i]); i += 1; continue
         ctype = m.group(1).lower()
@@ -131,8 +176,12 @@ def _extract_toc(md: str):
     :rtype: tuple[str, dict[str, str]]
     """
     macros, out = {}, []
+    in_fence = False
     for line in md.split("\n"):
-        if _TOC_RE.match(line):
+        if _is_fence(line):
+            in_fence = not in_fence
+            out.append(line)
+        elif not in_fence and _TOC_RE.match(line):
             token = f"xTOC{len(macros)}x"
             macros[token] = ('<ac:structured-macro ac:name="toc" ac:schema-version="1">'
                              '<ac:parameter ac:name="maxLevel">2</ac:parameter>'
@@ -228,7 +277,8 @@ def _extract_wikilinks(md: str, prefix: str = ""):
     the published ``<prefix> - 01 - Foo``. The *display* text is left unprefixed,
     so readers still see the natural name. The ``#anchor`` is dropped for now —
     Confluence heading anchors use a different scheme — so the link still lands
-    on the right page.
+    on the right page; it is dropped from the display text too, so the link
+    does not advertise a heading it will not jump to (an alias wins over both).
 
     Wikilinks inside fenced code blocks are intentionally left untouched. They
     are source code examples, not document navigation, and converting them to
@@ -251,7 +301,9 @@ def _extract_wikilinks(md: str, prefix: str = ""):
         if "|" in content:
             content, alias = (s.strip() for s in content.split("|", 1))
         target = content.split("#", 1)[0].strip()
-        display = alias if alias else content
+        # The anchor is dropped from the link target, so drop it from the text
+        # too; fall back to the raw content for an anchor-only [[#Heading]].
+        display = alias or target or content
         token = f"xLINK{len(links)}x"
         links[token] = _wikilink_macro(prefixed_title(prefix, target), display)
         return token
@@ -259,7 +311,7 @@ def _extract_wikilinks(md: str, prefix: str = ""):
     out = []
     in_fence = False
     for line in md.splitlines(keepends=True):
-        if line.lstrip().startswith("```"):
+        if _is_fence(line):
             in_fence = not in_fence
             out.append(line)
             continue
@@ -272,28 +324,32 @@ def _extract_wikilinks(md: str, prefix: str = ""):
 _IMG_RE = re.compile(r'<img src="img/([^"]+)"[^>]*/>')
 
 
-def _images_to_attachments(html: str, img_dir):
+def _images_to_attachments(html: str, img_dir, img_width=None):
     """Rewrite rendered Mermaid ``<img>`` tags as Confluence ``ac:image`` macros.
 
     :param html: the HTML fragment containing ``<img src="img/NAME.png">`` tags.
     :type html: str
     :param img_dir: directory the referenced PNG files live in.
+    :param img_width: optional display width in pixels, emitted as
+        ``ac:width`` on every image; ``None`` emits no attribute.
+    :type img_width: int | None
     :returns: a ``(html, attachments)`` pair, where ``attachments`` is a list of
         ``(filename, filepath)`` tuples to upload.
     :rtype: tuple[str, list[tuple[str, str]]]
     """
     names = []
+    width_attr = f' ac:width="{int(img_width)}"' if img_width else ""
 
     def repl(m):
         names.append(m.group(1))
-        return f'<ac:image><ri:attachment ri:filename="{m.group(1)}" /></ac:image>'
+        return f'<ac:image{width_attr}><ri:attachment ri:filename="{m.group(1)}" /></ac:image>'
 
     html = _IMG_RE.sub(repl, html)
     atts = [(fn, str(pathlib.Path(img_dir) / fn)) for fn in names]
     return html, atts
 
 
-def md_to_storage(md: str, img_dir=None, prefix=""):
+def md_to_storage(md: str, img_dir=None, prefix="", img_width=None):
     """Convert Markdown to a Confluence storage-format body and its attachments.
 
     Runs the bulk converter, then applies the storage-format transforms (callout
@@ -307,6 +363,9 @@ def md_to_storage(md: str, img_dir=None, prefix=""):
     :param prefix: namespacing prefix applied to wikilink targets so internal
         links resolve to the prefixed published page titles.
     :type prefix: str
+    :param img_width: optional display width in pixels for every Mermaid image
+        (``ac:width``); ``None`` leaves the images at their natural size.
+    :type img_width: int | None
     :returns: a ``(storage_xhtml, attachments)`` pair, where ``attachments`` is
         a list of ``(filename, filepath)`` tuples.
     :rtype: tuple[str, list[tuple[str, str]]]
@@ -327,7 +386,7 @@ def md_to_storage(md: str, img_dir=None, prefix=""):
         mdc._current_img_dir, mdc._current_img_rel = prev_dir, prev_rel
     for token, macro in {**macros, **tocs}.items():
         html = html.replace(f"<p>{token}</p>", macro)
-    html, atts = _images_to_attachments(html, img_dir) if img_dir else (html, [])
+    html, atts = _images_to_attachments(html, img_dir, img_width) if img_dir else (html, [])
     html = _fix_autolinks(html)
     html = _escape_bare_amp(html)
     html = _code_blocks_to_macro(html)        # last: creates CDATA the amp-escape must not touch
@@ -562,7 +621,7 @@ def prefixed_title(prefix, title):
     return f"{prefix} - {title}" if prefix else title
 
 
-def publish_page(space_id, parent_id, title, md, img_dir, dry_run=False, prefix=""):
+def publish_page(space_id, parent_id, title, md, img_dir, dry_run=False, prefix="", img_width=None):
     """Create or update one page and upload its rendered diagrams.
 
     The body is always converted and validated first, so errors surface early.
@@ -575,26 +634,54 @@ def publish_page(space_id, parent_id, title, md, img_dir, dry_run=False, prefix=
     :param dry_run: when ``True``, resolve the action but write nothing.
     :param prefix: namespacing prefix prepended to the title (see
         :func:`prefixed_title`).
+    :param img_width: optional Mermaid image width in pixels (see
+        :func:`md_to_storage`).
     :returns: an ``(action, page_id, attachments)`` tuple, where ``action`` is
         ``"CREATE"`` or ``"UPDATE"``.
     :rtype: tuple[str, str | None, list]
     """
     full_title = prefixed_title(prefix, title)
-    html, atts = md_to_storage(md, img_dir, prefix)   # convert + validate; prefix wikilink targets
+    html, atts = md_to_storage(md, img_dir, prefix, img_width)   # convert + validate; prefix wikilink targets
     pid = find_page_id_by_title(space_id, full_title)
     action = "UPDATE" if pid else "CREATE"
     if dry_run:
         return action, pid, atts
+    # Attachments must exist BEFORE the body that references them is saved:
+    # Confluence links each ri:attachment to the file at save time (it records
+    # ri:version-at-save). A body saved first keeps unlinked references, which
+    # view mode still resolves by name but the editor shows as "Preview not
+    # available" and drops on the user's next save. A new page can only take
+    # attachments once it exists, so a CREATE with diagrams saves its body twice.
     if pid:
+        _upload_missing_attachments(pid, atts)
         update_page(pid, full_title, html, "republish")
     else:
         pid = create_page(space_id, parent_id, full_title, html)["id"]
-    existing = existing_attachment_names(pid) if atts else set()
-    for fn, fp in atts:                       # attach AFTER the page exists
-        if fn in existing:                    # content-hashed name already present -> identical, skip
-            continue
-        upload_attachment(pid, fp, fn)
+        if _upload_missing_attachments(pid, atts):
+            update_page(pid, full_title, html, "link diagram attachments")
     return action, pid, atts
+
+
+def _upload_missing_attachments(page_id, atts):
+    """Upload the attachments not yet on the page; return how many were uploaded.
+
+    Names are content hashes, so a name already present means identical bytes
+    (and re-uploading a duplicate filename would return HTTP 400 anyway).
+
+    :param page_id: the page id.
+    :param atts: ``(filename, filepath)`` pairs from :func:`md_to_storage`.
+    :rtype: int
+    """
+    if not atts:
+        return 0
+    existing = existing_attachment_names(page_id)
+    uploaded = 0
+    for fn, fp in atts:
+        if fn not in existing:
+            upload_attachment(page_id, fp, fn)
+            existing.add(fn)
+            uploaded += 1
+    return uploaded
 
 
 def find_insitu_dir(regen):
@@ -615,7 +702,7 @@ def find_insitu_dir(regen):
                  if d.is_dir() and d.name.strip().casefold() == "in situ"), None)
 
 
-def publish_set(regen_dir, space_id, parent_id, img_dir, dry_run=False, prefix=""):
+def publish_set(regen_dir, space_id, parent_id, img_dir, dry_run=False, prefix="", img_width=None):
     """Publish a whole doc-set folder.
 
     Numbered ``NN - Title.md`` pages go directly under the parent; docs in an
@@ -629,6 +716,8 @@ def publish_set(regen_dir, space_id, parent_id, img_dir, dry_run=False, prefix="
     :param img_dir: where to render Mermaid PNGs.
     :param dry_run: when ``True``, write nothing.
     :param prefix: namespacing prefix prepended to every page title.
+    :param img_width: optional Mermaid image width in pixels (see
+        :func:`md_to_storage`).
     :returns: a list of ``(title, action, diagram_count)`` tuples, where ``title``
         is the actual (prefixed) Confluence page title.
     :rtype: list[tuple[str, str, int]]
@@ -636,7 +725,7 @@ def publish_set(regen_dir, space_id, parent_id, img_dir, dry_run=False, prefix="
     regen = pathlib.Path(regen_dir)
     report = []
     for f in sorted(regen.glob("*.md")):                     # 00..NN top-level
-        action, pid, atts = publish_page(space_id, parent_id, f.stem, f.read_text(), img_dir, dry_run, prefix)
+        action, pid, atts = publish_page(space_id, parent_id, f.stem, f.read_text(), img_dir, dry_run, prefix, img_width)
         report.append((prefixed_title(prefix, f.stem), action, len(atts)))
     insitu = find_insitu_dir(regen)
     if insitu is not None:
@@ -648,7 +737,7 @@ def publish_set(regen_dir, space_id, parent_id, img_dir, dry_run=False, prefix="
                               "<p>Stack-specific deep-dive docs for this repository.</p>")["id"]
         report.append((insitu_title, container_action, 0))   # always show the container in the plan
         for f in sorted(insitu.glob("*.md")):
-            action, pid, atts = publish_page(space_id, cid or parent_id, f.stem, f.read_text(), img_dir, dry_run, prefix)
+            action, pid, atts = publish_page(space_id, cid or parent_id, f.stem, f.read_text(), img_dir, dry_run, prefix, img_width)
             report.append((prefixed_title(prefix, f.stem), action, len(atts)))
     return report
 
@@ -657,11 +746,28 @@ def publish_set(regen_dir, space_id, parent_id, img_dir, dry_run=False, prefix="
 #  CLI
 # --------------------------------------------------------------------------- #
 
-def main():
-    """Parse arguments, resolve the space, and publish the doc set.
+def _positive_int(value):
+    """Parse a strictly positive integer for argparse (used by ``--img-width``).
 
-    :raises SystemExit: on missing credentials, a bad docs folder, or an unknown
-        space key.
+    :param value: the raw command-line string.
+    :type value: str
+    :rtype: int
+    :raises argparse.ArgumentTypeError: if ``value`` is not an integer >= 1.
+    """
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be a positive integer, got {value!r}") from None
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"must be a positive integer, got {value!r}")
+    return n
+
+
+def build_parser():
+    """Build the command-line parser (separate from :func:`main` so tests can
+    exercise argument validation in-process).
+
+    :rtype: argparse.ArgumentParser
     """
     ap = argparse.ArgumentParser(
         description="Publish a folder of Markdown docs to Confluence Cloud under one parent page.")
@@ -674,9 +780,22 @@ def main():
                     help="unique identifier prepended to every page title "
                          '(e.g. "langflow" -> "langflow - 01 - Overview"); use a '
                          "distinct value per repo so docs sharing a space never collide")
+    ap.add_argument("--img-width", type=_positive_int, default=None, metavar="PX",
+                    help="display width in pixels for every Mermaid diagram "
+                         "(default: unset, natural size)")
     ap.add_argument("--dry-run", action="store_true",
                     help="print the CREATE/UPDATE plan and write nothing")
-    args = ap.parse_args()
+    return ap
+
+
+def main(argv=None):
+    """Parse arguments, resolve the space, and publish the doc set.
+
+    :param argv: argument list (``sys.argv[1:]`` when ``None``).
+    :raises SystemExit: on missing credentials, a bad docs folder, or an unknown
+        space key.
+    """
+    args = build_parser().parse_args(argv)
 
     missing = [v for v in ("CONFLUENCE_BASE_URL", "CONFLUENCE_EMAIL", "CONFLUENCE_API_TOKEN")
                if not os.environ.get(v)]
@@ -708,7 +827,8 @@ def main():
     img_dir = args.img_dir or str(pathlib.Path(args.docs_dir) / ".img")
     try:
         report = publish_set(args.docs_dir, space_id, args.parent, img_dir,
-                             dry_run=args.dry_run, prefix=args.prefix)
+                             dry_run=args.dry_run, prefix=args.prefix,
+                             img_width=args.img_width)
     except urllib.error.HTTPError as e:
         if e.code == 404:
             hint = (f"A 404 means --parent {args.parent} does not exist — check the "

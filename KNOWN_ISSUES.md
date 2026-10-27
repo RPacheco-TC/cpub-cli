@@ -21,18 +21,18 @@ The **python.org** installer builds Python with its own CA bundle, but does not
 install it by default. Until the bundle is installed, TLS connections (including
 to Atlassian) fail.
 
-Apple's system Python (`/usr/bin/python3`) does **not** have this problem — it
-uses the system keychain.
+Homebrew's Python does **not** have this problem. (Apple's system Python,
+`/usr/bin/python3`, doesn't either, but it is 3.9 and the tool now requires
+Python 3.12+.)
 
 ### Quickest fix
 
-Use the system Python:
+Use Homebrew's Python:
 
 ```bash
-/usr/bin/python3 confluence_publish.py ...
+brew install python@3.12
+python3.12 confluence_publish.py ...
 ```
-
-No install required. Works as-is on macOS.
 
 ### If you must use the python.org build
 
@@ -57,11 +57,11 @@ python3 -c "import urllib.request; urllib.request.urlopen('https://www.atlassian
 
 ### TODO
 
-- [ ] **Promote `/usr/bin/python3` as the recommended interpreter** in the README
-  troubleshooting section — it requires zero setup for most macOS users. Move it
-  to the top of the fix, before the CA-bundle instructions.
-- [ ] Make the version reference in the README version-agnostic (`Python 3.x`
-  instead of a hardcoded minor version).
+- [x] ~~**Promote `/usr/bin/python3` as the recommended interpreter**~~ — done,
+  then **reversed**: the tool now requires Python 3.12+ and Apple's system
+  Python is 3.9, so the README recommends Homebrew `python@3.12` instead.
+- [x] Make the version reference in the README version-agnostic (`Python 3.x`
+  instead of a hardcoded minor version) — done.
 
 ---
 
@@ -73,14 +73,30 @@ Mermaid diagrams render correctly in Confluence **view mode** but appear as grey
 "Preview not available" placeholders in **edit mode**. They cannot be resized
 through the editor.
 
-### Root cause
+Saving from the editor then **drops** the placeholders, so the diagrams vanish
+from view mode too.
 
-Confluence's editor cannot inline-preview attachment images referenced via the
-`ac:image` / `ri:attachment` storage macro. This is a Confluence limitation, not
-a tool bug. The images are present and correct; the editor just cannot render
-them in the editing surface.
+### Root cause (corrected — this was a tool bug, now fixed)
 
-### Confirmed workaround
+The original diagnosis below ("a Confluence limitation") was wrong. The cause was
+**publish order**: `publish_page` saved the page body *before* uploading the PNGs
+it references. Confluence links each `ri:attachment` to the actual file when the
+body is saved (it adds `ri:version-at-save="N"` to the reference). A body saved
+before the file exists keeps an unlinked, name-only reference: view mode still
+finds the file by name, but the editor cannot map it to a media file, shows
+"Preview not available", and drops it on save. Verified on the test site:
+version 1 of a freshly created page had bare references; re-saving the same body
+once the attachments existed produced `ri:version-at-save="1"` and the editor
+loaded both images. It hit every CREATE with diagrams, and every UPDATE whose
+diagram changed (new content hash → new filename).
+
+**Fix:** `publish_page` now uploads missing attachments *before* saving the body
+on UPDATE, and on CREATE (the page must exist to take attachments) saves the body
+a second time after uploading. Covered by `tests/test_publish_order.py`.
+**Existing broken pages:** re-run the publish once; the UPDATE re-saves the body
+after the attachments exist, which links them. No manual workaround is needed.
+
+### Old workaround (no longer needed)
 
 > **⚠️ Do all replacements before saving.**
 > If you replace some images and save, the remaining attachment-referenced images
@@ -99,13 +115,15 @@ them in the editing surface.
 
 ### TODO
 
-- [ ] Investigate whether the `ac:image` macro supports a `width` attribute at
-  publish time (e.g. `<ac:image ac:width="700"><ri:attachment ri:filename="..."/></ac:image>`).
-  If so, add an `--img-width` CLI option to `confluence_publish.py` so the
-  publisher sets a sensible default width on every diagram — eliminating most
-  resize needs and reducing how often users hit the edit-mode limitation.
-- [ ] Add this known limitation and workaround to the README troubleshooting
-  section.
+- [x] Investigate whether the `ac:image` macro supports a `width` attribute at
+  publish time — it does (`ac:width`). Added `--img-width PX`, which emits
+  `<ac:image ac:width="PX">` on every diagram. **Decision:** no default width —
+  when the flag is unset no attribute is emitted, so existing publishes are
+  byte-identical; pass e.g. `--img-width 700` to opt in.
+- [x] Add this known limitation and workaround to the README troubleshooting
+  section — done.
+- [x] Fix the real cause (body saved before attachments were uploaded) — done;
+  README troubleshooting now says "re-publish" instead of the manual workaround.
 
 ---
 
@@ -139,13 +157,48 @@ substitution as before.
 ### TODO
 
 - [x] ~~Port the fix to the repo and open a PR~~ — done, merged in PR #1.
-- [ ] Add a regression test: a `.md` file with a `[[wikilink]]` inside a fenced
-  code block should convert without error and leave the link text as-is inside
-  the published `<code>` block.
-- [ ] Audit whether the same masking gap exists for `_extract_callouts`. If a
-  callout-style line (`> [!info]`) appears inside a code block, it may trigger
-  the same class of bug.
-- [ ] The merged fix only toggles fence state on backtick fences (` ``` `). It
-  does **not** handle tilde fences (`~~~`) or 4-space indented code blocks.
-  Wikilinks inside those styles will still be extracted. Low priority given the
-  Obsidian-style Markdown this tool targets, but worth a follow-up patch.
+- [x] Add a regression test — done: `tests/test_md_to_storage.py`
+  (`python3.12 -B -m unittest discover -s tests`, offline).
+- [x] Audit whether the same masking gap exists for `_extract_callouts` — it
+  did, and for `_extract_toc` too: a `> [!info]` or `[[TOC]]` line inside a code
+  block was published as a literal `xCALLOUT0x` / `xTOC0x` token (silently, since
+  the XML stayed valid). Fixed: all three extractors now share one fence rule
+  (`_is_fence`) and leave fenced lines untouched; covered by regression tests.
+- [x] ~~Handle tilde fences (`~~~`) and 4-space indented code blocks~~ —
+  **won't fix.** `md_to_confluence.py` does not treat either style as code at
+  all (no `<pre><code>`, no CDATA), so a wikilink inside one becomes a normal
+  link and cannot break XML. Supporting them would be a converter feature, not
+  a fix to this bug.
+
+---
+
+## Wikilink or `[[TOC]]` in a code block inside a callout/blockquote breaks XML
+
+### Symptom
+
+Publishing fails with an XML parse error (`mismatched tag`) when a fenced code
+block *inside a callout or blockquote* contains a `[[wikilink]]` or `[[TOC]]`:
+
+````markdown
+> [!info] Example
+> ```
+> [[01 - Foo]]
+> ```
+````
+
+The same happens with a plain `>` blockquote. Found during QA of the
+code-fence fixes; it also fails on the code before those fixes (not a regression).
+
+### Root cause
+
+The pre-conversion extractors only recognise a fence when the line itself starts
+with ```` ``` ```` (`_is_fence`). Inside a quote the fence line starts with
+`> ` instead, so the wikilink/TOC is still extracted, and its `ac:link` / macro
+markup ends up inside the code block's `CDATA`, which cannot hold tags.
+
+### TODO
+
+- [ ] Make the extractors treat `> `-prefixed fence lines as fences inside
+  quote blocks (keeping one shared rule), and add regression tests for
+  callouts, plain blockquotes and `[[TOC]]`.
+
