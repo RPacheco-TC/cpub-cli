@@ -7,7 +7,7 @@ Run from the repo root::
 import pathlib
 import unittest
 
-from _support import config as cp
+from _support import config as cp, errors
 
 URL, MAIL, TOK = cp.CRED_VARS
 
@@ -30,18 +30,18 @@ class ParseEnvText(unittest.TestCase):
             "not an assignment\n"
             "export\n"
         )
-        self.assertEqual(cp.parse_env_text(text), {
+        self.assertEqual(cp.CredentialLoader.parse(text), {
             "PLAIN": "value", "EXPORTED": "yes", "SPACED": "padded",
             "DQ": "two words # not a comment", "SQ": "lit $HOME \\n", "TRAIL": "abc",
             "HASH": "a#b", "ESC": 'say "hi" \\ ok\n', "EQ": "a=b=c", "EMPTY": "",
         })
 
     def test_never_expands_or_executes(self):
-        self.assertEqual(cp.parse_env_text("A=$(rm -rf /)\nB=`id`\nC=${HOME}\n"),
+        self.assertEqual(cp.CredentialLoader.parse("A=$(rm -rf /)\nB=`id`\nC=${HOME}\n"),
                          {"A": "$(rm -rf /)", "B": "`id`", "C": "${HOME}"})
 
     def test_later_assignment_wins(self):
-        self.assertEqual(cp.parse_env_text("A=1\nA=2\n"), {"A": "2"})
+        self.assertEqual(cp.CredentialLoader.parse("A=1\nA=2\n"), {"A": "2"})
 
 
 def files(mapping):
@@ -61,16 +61,19 @@ USER = "/home/u/.config/confluence-publisher/.env"
 
 def load(fs, environ=ENV, env_file=None, warn=None):
     warnings = []
-    out = cp.load_env(env_file=env_file, cwd=CWD, environ=dict(environ), read_file=files(fs),
-                      warn=warn or warnings.append)
+    loader = cp.CredentialLoader(cwd=CWD, environ=dict(environ), read_file=files(fs),
+                                 warn=warn or warnings.append)
+    out = loader.resolve(env_file)
     return out, warnings
 
 
 class LoadEnv(unittest.TestCase):
     def test_search_paths(self):
-        self.assertEqual(cp.env_search_paths("~/x.env", CWD, None, ENV)[1:],
+        paths = cp.CredentialLoader(cwd=CWD, environ=ENV).search_paths("~/x.env")
+        self.assertEqual(paths[1:],
                          [pathlib.Path("/work/.env"), pathlib.Path(USER)])
-        self.assertEqual(cp.env_search_paths(None, CWD, None, {"XDG_CONFIG_HOME": "/xdg"})[-1],
+        xdg = cp.CredentialLoader(cwd=CWD, environ={"XDG_CONFIG_HOME": "/xdg"})
+        self.assertEqual(xdg.search_paths()[-1],
                          pathlib.Path("/xdg/confluence-publisher/.env"))
 
     def test_first_hit_wins_per_variable(self):
@@ -85,7 +88,8 @@ class LoadEnv(unittest.TestCase):
     def test_env_vars_win_set_a_workflow_unchanged(self):
         environ = {**ENV, URL: "u", MAIL: "m", TOK: "t"}
         out, _ = load({"/work/.env": f"{TOK}=file\n"}, environ=environ)
-        self.assertEqual({k: v[1] for k, v in out.items()}, dict.fromkeys(cp.CRED_VARS, "environment"))
+        self.assertEqual({k: v[1] for k, v in out.items()},
+                         dict.fromkeys(cp.CRED_VARS, "environment"))
 
     def test_empty_env_var_falls_through_to_files(self):
         out, _ = load({"/work/.env": f"{TOK}=file\n"}, environ={**ENV, TOK: ""})
@@ -116,10 +120,42 @@ class LoadEnv(unittest.TestCase):
         out, _ = load({"/work/.env": "PATH=/evil\nOTHER=x\n"})
         self.assertEqual(out, {})
 
-    def test_apply_env_fills_only_unset(self):
-        environ = {MAIL: "keep"}
-        cp.apply_env({URL: ("u", "/f"), MAIL: ("m", "/f")}, environ)
-        self.assertEqual(environ, {URL: "u", MAIL: "keep"})
+    def test_load_fills_only_unset(self):
+        """(was apply_env) env values are kept; files only fill what is unset."""
+        fs = {"/work/.env": f"{URL}=u\n{MAIL}=m\n{TOK}=tok1\n"}
+        loader = cp.CredentialLoader(cwd=CWD, environ={**ENV, MAIL: "keep"}, read_file=files(fs))
+        creds = loader.load()
+        self.assertEqual((creds.base_url, creds.email, creds.token), ("u", "keep", "tok1"))
+        self.assertEqual(creds.sources, {URL: "/work/.env", MAIL: "environment",
+                                         TOK: "/work/.env"})
+
+    def test_load_raises_missing_credentials_with_searched_files(self):
+        loader = cp.CredentialLoader(cwd=CWD, environ=dict(ENV), read_file=files({}))
+        with self.assertRaises(errors.MissingCredentials) as cm:
+            loader.load()
+        self.assertEqual(cm.exception.missing, cp.CRED_VARS)
+        self.assertEqual(cm.exception.searched, [pathlib.Path("/work/.env"), pathlib.Path(USER)])
+
+
+class CredentialsValue(unittest.TestCase):
+
+    def setUp(self):
+        self.c = cp.Credentials("https://x.invalid/wiki/", "me@x", "s3cr3t-token",
+                                {TOK: "/work/.env"})
+
+    def test_base_url_trailing_slash_dropped(self):
+        self.assertEqual(self.c.base_url, "https://x.invalid/wiki")
+
+    def test_auth_header_is_basic(self):
+        import base64
+        self.assertEqual(self.c.auth_header(),
+                         "Basic " + base64.b64encode(b"me@x:s3cr3t-token").decode())
+
+    def test_token_never_shown(self):
+        for text in (repr(self.c), self.c.masked(), self.c.mask("bad s3cr3t-token here")):
+            self.assertNotIn("s3cr3t-token", text)
+        self.assertEqual(self.c.mask("x s3cr3t-token y"), "x **** y")
+        self.assertEqual(self.c.token_source, "/work/.env")
 
 
 if __name__ == "__main__":

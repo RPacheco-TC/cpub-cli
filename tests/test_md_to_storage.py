@@ -11,8 +11,7 @@ from _support import storage as cp
 
 def storage(md: str, **kw) -> str:
     """Convert ``md`` with diagram rendering off and return the storage body."""
-    body, _atts = cp.md_to_storage(md, None, **kw)
-    return body
+    return cp.StorageConverter(img_dir=None, **kw).convert(md).html
 
 
 def code_bodies(html: str) -> list[str]:
@@ -150,16 +149,17 @@ class ImageWidth(unittest.TestCase):
     IMG = '<p><img src="img/abc123.png" alt="diagram" /></p>'
 
     def test_default_emits_no_width(self):
-        html, atts = cp._images_to_attachments(self.IMG, "/tmp/x")
+        html, atts = cp.StorageConverter(img_dir="/tmp/x").attach_images(self.IMG)
         self.assertIn('<ac:image><ri:attachment ri:filename="abc123.png" /></ac:image>', html)
         self.assertNotIn("ac:width", html)
         self.assertEqual([a[0] for a in atts], ["abc123.png"])
 
     def test_width_is_emitted_and_valid(self):
-        html, atts = cp._images_to_attachments(self.IMG, "/tmp/x", 700)
-        self.assertIn('<ac:image ac:width="700"><ri:attachment ri:filename="abc123.png" /></ac:image>', html)
+        html, atts = cp.StorageConverter(img_dir="/tmp/x", img_width=700).attach_images(self.IMG)
+        self.assertIn('<ac:image ac:width="700">'
+                      '<ri:attachment ri:filename="abc123.png" /></ac:image>', html)
         self.assertEqual([a[0] for a in atts], ["abc123.png"])  # filenames unchanged
-        cp.validate_storage(html)
+        cp.StorageDocument(html).validate()
 
     def test_md_to_storage_accepts_img_width_without_images(self):
         md = "# T\n\nNo diagrams here.\n"

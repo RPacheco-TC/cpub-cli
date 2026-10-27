@@ -1,51 +1,70 @@
-"""execute_plan() per-page write order, with the REST helpers stubbed (offline, in-process).
+"""PlanExecutor per-page write order, with a recording fake client (offline, in-process).
 
 Run from the repo root::
 
     python3.12 -B -m unittest discover -s tests
 """
-import contextlib
 import unittest
 
-from _support import plan as cp
+from _support import docset, executor, plan, storage
 
 ATTS = [("mermaid_aaa.png", "/x/aaa.png"), ("mermaid_bbb.png", "/x/bbb.png")]
 
 
-@contextlib.contextmanager
-def stubbed(page_id=None, existing=()):
-    """Replace the REST helpers and md_to_storage; yield the recorded calls."""
-    calls = []
-    fakes = {
-        "md_to_storage": lambda md, img_dir, prefix, img_width: ("<p>body</p>", list(ATTS)),
-        "space_title_index": lambda space: {"02 - Diagrams": page_id} if page_id else {},
-        "get_page_info": lambda pid: {"id": pid, "title": "x", "spaceId": "S", "parentId": None,
-                                      "status": "current", "version": 1, "last_edited": None, "webui": None},
-        "is_descendant": lambda pid, anc: True,
-        "get_marker": lambda pid: ({"source": "02 - Diagrams", "tool": cp.MARKER_TOOL}, "p1", 1),
-        "set_marker": lambda pid, source, **kw: calls.append(("marker", pid)),
-        "create_page": lambda *a: calls.append(("create",)) or {"id": "new"},
-        "update_page": lambda pid, title, html, msg="", expected_version=None: calls.append(("update", pid)),
-        "existing_attachment_names": lambda pid: set(existing),
-        "upload_attachment": lambda pid, fp, fn: calls.append(("upload", pid, fn)),
-    }
-    saved = {name: getattr(cp, name) for name in fakes}
-    for name, fn in fakes.items():
-        setattr(cp, name, fn)
-    try:
-        yield calls
-    finally:
-        for name, fn in saved.items():
-            setattr(cp, name, fn)
+class FakeConverter:
+    """Stands in for StorageConverter: every doc converts to one body with ATTS."""
+    prefix = ""
+
+    def convert(self, md):
+        return storage.StorageDocument("<p>body</p>", list(ATTS))
 
 
-def publish(dry_run=False):
+class RecordingClient:
+    """The ConfluenceClient methods the planner and executor use; writes are recorded."""
+
+    def __init__(self, page_id=None, existing=()):
+        self.page_id, self.existing, self.calls = page_id, set(existing), []
+
+    # reads (planner)
+    def get_page_info(self, pid):
+        return {"id": pid, "title": "x", "spaceId": "S", "parentId": None,
+                "status": "current", "version": 1, "last_edited": None, "webui": None}
+
+    def space_title_index(self, space):
+        return {"02 - Diagrams": self.page_id} if self.page_id else {}
+
+    def is_descendant(self, pid, anc):
+        return True
+
+    def get_marker(self, pid):
+        return {"source": "02 - Diagrams", "tool": plan.MARKER_TOOL}, "p1", 1
+
+    def existing_attachment_names(self, pid):
+        return set(self.existing)
+
+    # writes (executor only)
+    def set_marker(self, pid, source, **kw):
+        self.calls.append(("marker", pid))
+
+    def create_page(self, *a):
+        self.calls.append(("create",))
+        return {"id": "new"}
+
+    def update_page(self, pid, title, html, msg="", expected_version=None):
+        self.calls.append(("update", pid))
+
+    def upload_attachment(self, pid, fp, fn):
+        self.calls.append(("upload", pid, fn))
+
+
+def publish(client, dry_run=False):
     """Plan + execute one managed page; return v1.1's ``(action, page_id, attachments)``."""
-    plan = cp.build_plan("unused", "S", "P", "/img", docs=([("02 - Diagrams", "md")], None))
-    item = plan.items[0]
+    source = docset.DocSet((docset.SourceDoc("02 - Diagrams", "md"),))
+    p = plan.Planner(client, FakeConverter()).build(source, "S", "P")
+    item = p.items[0]
     if dry_run:
         return item.action, item.page_id, item.attachments
-    (_, pid), = cp.execute_plan(plan).written
+    (_, pid), = executor.PlanExecutor(client).execute(p).written
     return item.action, pid, item.attachments
 
 
@@ -54,29 +73,29 @@ class AttachmentsBeforeBody(unittest.TestCase):
     Confluence links them (the editor otherwise shows "Preview not available")."""
 
     def test_update_uploads_new_diagrams_before_saving_body(self):
-        with stubbed(page_id="42", existing={"mermaid_aaa.png"}) as calls:
-            action, pid, _ = publish()
+        client = RecordingClient(page_id="42", existing={"mermaid_aaa.png"})
+        action, pid, _ = publish(client)
         self.assertEqual((action, pid), ("UPDATE", "42"))
-        self.assertEqual(calls, [("upload", "42", "mermaid_bbb.png"), ("update", "42")])
+        self.assertEqual(client.calls, [("upload", "42", "mermaid_bbb.png"), ("update", "42")])
 
     def test_create_with_diagrams_resaves_body_after_upload(self):
-        with stubbed() as calls:
-            action, pid, _ = publish()
+        client = RecordingClient()
+        action, pid, _ = publish(client)
         self.assertEqual((action, pid), ("CREATE", "new"))
-        self.assertEqual(calls, [("create",), ("marker", "new"),
-                                 ("upload", "new", "mermaid_aaa.png"),
-                                 ("upload", "new", "mermaid_bbb.png"),
-                                 ("update", "new")])
+        self.assertEqual(client.calls, [("create",), ("marker", "new"),
+                                        ("upload", "new", "mermaid_aaa.png"),
+                                        ("upload", "new", "mermaid_bbb.png"),
+                                        ("update", "new")])
 
     def test_create_without_new_uploads_saves_once(self):
-        with stubbed(existing={"mermaid_aaa.png", "mermaid_bbb.png"}) as calls:
-            publish()
-        self.assertEqual(calls, [("create",), ("marker", "new")])
+        client = RecordingClient(existing={"mermaid_aaa.png", "mermaid_bbb.png"})
+        publish(client)
+        self.assertEqual(client.calls, [("create",), ("marker", "new")])
 
     def test_dry_run_writes_nothing(self):
-        with stubbed(page_id="42") as calls:
-            action, _, atts = publish(dry_run=True)
-        self.assertEqual((action, calls, len(atts)), ("UPDATE", [], 2))
+        client = RecordingClient(page_id="42")
+        action, _, atts = publish(client, dry_run=True)
+        self.assertEqual((action, client.calls, len(atts)), ("UPDATE", [], 2))
 
 
 if __name__ == "__main__":

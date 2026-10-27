@@ -1,24 +1,25 @@
 """CLI wiring of the Phase 1a safety features (E0, S1.1, S3.1), in-process.
 
-The library layer (``build_plan`` / ``check_plan`` / ``execute_plan`` /
-``load_env`` …) is replaced by small fakes on the module, so these tests pin
-what ``main()`` does with its results: which calls happen, what is printed,
-and the wording of every expected failure. No network, no files, no
-subprocess; ``load_env`` is stubbed so a developer's real ``./.env`` is never
-read. Run from the repo root::
+:class:`~confluence_publisher.cli.PublishCommand` receives every collaborator
+through :meth:`~confluence_publisher.cli.PublishCommand.from_args`
+overrides: these tests pass small fakes for the client, planner and executor,
+and the real :class:`~confluence_publisher.config.CredentialLoader` fed a fake
+environment and in-memory files (so a developer's real ``./.env`` is never
+read). They pin what the command does with the results: which calls happen,
+what is printed, and the wording of every expected failure. No network, no
+files, no subprocess, no patching. Run from the repo root::
 
     python3.12 -B -m unittest discover -s tests
 """
 import contextlib
 import io
-import os
 import pathlib
 import ssl
 import types
 import unittest
 import urllib.error
 
-from _support import cli as cp, plan, ROOT
+from _support import cli as cp, config, docset, errors, plan, storage, ROOT
 
 DOCS = str(ROOT / "tests")          # a real folder with no .md files
 BASE = "https://example.invalid/wiki"
@@ -26,6 +27,8 @@ TOKEN = "s3cr3t-token-value"
 CREDS = {"CONFLUENCE_BASE_URL": BASE, "CONFLUENCE_EMAIL": "x@example.invalid",
          "CONFLUENCE_API_TOKEN": TOKEN}
 ARGV = [DOCS, "--space", "ENG", "--parent", "100", "--prefix", "p"]
+PROJ = "/home/u/proj"                                   # the fake current folder
+USER_CONFIG = "/home/u/.config/confluence-publisher"    # the fake user config folder
 
 
 def item(title, action="UPDATE", managed="same", diagrams=0, version=3,
@@ -42,46 +45,88 @@ def refusal(title, message, fix):
                                  message=message, fix=fix)
 
 
-@contextlib.contextmanager
-def environ(values):
-    saved = dict(os.environ)
-    os.environ.clear(); os.environ.update(values)
-    try:
-        yield
-    finally:
-        os.environ.clear(); os.environ.update(saved)
+class FakeStdin:
+    def __init__(self, tty):
+        self.tty = tty
+
+    def isatty(self):
+        return self.tty
+
+
+class FakePlan:
+    """The parts of :class:`~confluence_publisher.plan.Plan` the command reads."""
+
+    def __init__(self, items, refusals):
+        self.items, self._refusals = list(items), list(refusals)
+        self.parent_info = {"webui": "/spaces/ENG/pages/100/Parent"}
+
+    def refusals(self, max_updates=25):
+        return list(self._refusals)
+
+    def handover_items(self):
+        return [i for i in self.items if i.action == "UPDATE" and i.managed in ("none", "other")]
 
 
 class Fake:
-    """Records library calls; ``execute`` decides what execute_plan does."""
+    """Fake collaborators for one run; records calls.
+
+    :param execute: ``(plan, **kwargs) -> RunReport`` standing in for the executor.
+    :param environ: the environment the credential loader sees.
+    :param files: ``{path or file name: (text, st_mode)}`` the loader can read.
+    :param http_error: raised by the planner's ``build``.
+    :param me: what ``whoami`` answers.
+    :param space_error: raised by ``resolve_space_id``.
+    """
 
     def __init__(self, items, refusals=(), execute=None, tty=False, answer=None,
-                 resolved=None, http_error=None):
-        self.plan = types.SimpleNamespace(
-            items=list(items), parent_info={"webui": "/spaces/ENG/pages/100/Parent"})
-        self.refusals = list(refusals)
+                 environ=None, files=None, http_error=None, me=None, space_error=None):
+        self.plan = FakePlan(items, refusals)
         self.execute = execute
         self.tty, self.answer = tty, answer
-        self.resolved = {} if resolved is None else resolved
+        self.environ = dict(CREDS) if environ is None else environ
+        self.files = files or {}
         self.http_error = http_error
+        self.me = me or {"authenticated": True, "status": 200}
+        self.space_error = space_error
         self.calls, self.prompts = [], []
 
-    def install(self):
+    def read_file(self, path):
+        return self.files.get(str(path)) or self.files.get(pathlib.Path(path).name)
+
+    def overrides(self, out):
         f = self
+        loader = config.CredentialLoader(environ=f.environ, cwd=PROJ, config_dir=USER_CONFIG,
+                                         read_file=f.read_file, warn=lambda msg: None)
 
-        def build_plan(*a, **k):
-            f.calls.append("build_plan")
-            if f.http_error:
-                raise f.http_error
-            return f.plan
+        class Loader:
+            def load(self, env_file=None):
+                f.calls.append(("load_env", env_file))
+                return loader.load(env_file)
 
-        def execute_plan(plan, **k):
-            f.calls.append(("execute_plan", k.get("adopt"), k.get("max_updates"),
-                            k.get("confirm_handover") is not None))
-            if f.execute:
-                return f.execute(plan, **k)
-            return types.SimpleNamespace(written=[(i, "1") for i in plan.items],
-                                         pending=[], marker_failures=[], error=None)
+        class Client:
+            def whoami(self):
+                return f.me
+
+            def resolve_space_id(self, key):
+                if f.space_error:
+                    raise f.space_error
+                return "S1"
+
+        class Planner:
+            def build(self, docs, space_id, parent_id):
+                f.calls.append("build_plan")
+                if f.http_error:
+                    raise f.http_error
+                return f.plan
+
+        class Executor:
+            def execute(self, plan, **k):
+                f.calls.append(("execute_plan", k.get("adopt"), k.get("max_updates"),
+                                k.get("confirm") is not None))
+                if f.execute:
+                    return f.execute(plan, **k)
+                return types.SimpleNamespace(written=[(i, "1") for i in plan.items],
+                                             pending=[], marker_failures=[], error=None)
 
         def ask(prompt):
             f.prompts.append(prompt)
@@ -89,39 +134,21 @@ class Fake:
                 raise f.answer
             return f.answer
 
-        return {
-            "load_env": lambda env_file=None, **k: f.calls.append(("load_env", env_file)) or f.resolved,
-            "env_search_paths": lambda env_file=None, **k: [pathlib.Path("/home/u/proj/.env"),
-                                                             pathlib.Path("/home/u/.config/confluence-publisher/.env")],
-            "resolve_space_id": lambda key: "S1",
-            "whoami": lambda: {"authenticated": True, "status": 200},
-            "build_plan": build_plan,
-            "check_plan": lambda plan, max_updates=25: list(f.refusals),
-            "handover_items": lambda plan: [i for i in plan.items
-                                            if i.action == "UPDATE" and i.managed in ("none", "other")],
-            "execute_plan": execute_plan,
-            "_stdin_is_tty": lambda: f.tty,
-            "_ask": ask,
-        }
+        return dict(credential_loader=Loader(), client_factory=lambda creds: Client(),
+                    planner_factory=lambda client, args: Planner(),
+                    executor_factory=lambda client: Executor(),
+                    prompt=cp.HandoverPrompt(out, ask=ask, stdin=FakeStdin(f.tty)))
 
 
-def run(fake, *extra, env=CREDS):
-    """Run main() with the fakes; return (exit_message_or_None, stdout)."""
-    patches = fake.install()
-    saved = {n: getattr(cp, n) for n in patches}
+def run(fake, *extra, argv=None):
+    """Run one command with the fakes; return (exit_message_or_None, stdout)."""
     out = io.StringIO()
+    args = cp.build_parser().parse_args([*(ARGV if argv is None else argv), *extra])
     try:
-        for n, fn in patches.items():
-            setattr(cp, n, fn)
-        with environ(env):
-            try:
-                cp.main([*ARGV, *extra], out=out)
-                return None, out.getvalue()
-            except SystemExit as e:
-                return e.code, out.getvalue()
-    finally:
-        for n, fn in saved.items():
-            setattr(cp, n, fn)
+        cp.PublishCommand.from_args(args, out, **fake.overrides(out)).run()
+        return None, out.getvalue()
+    except SystemExit as e:
+        return e.code, out.getvalue()
 
 
 def http_error(code, reason, detail):
@@ -188,7 +215,7 @@ class Parser(unittest.TestCase):
 
 class Credentials(unittest.TestCase):
     def test_missing_lists_names_and_searched_files(self):
-        msg, _ = run(Fake([]), env={"CONFLUENCE_BASE_URL": BASE})
+        msg, _ = run(Fake([], environ={"CONFLUENCE_BASE_URL": BASE}))
         assert_friendly(self, msg)
         self.assertIn("CONFLUENCE_EMAIL, CONFLUENCE_API_TOKEN", msg)
         self.assertNotIn("CONFLUENCE_BASE_URL,", msg)
@@ -198,25 +225,20 @@ class Credentials(unittest.TestCase):
         self.assertIn("environment variables", msg)
 
     def test_values_from_files_are_applied(self):
-        fake = Fake([item("p - 01 - A")], resolved={
-            k: (v, "/home/u/proj/.env") for k, v in CREDS.items()})
-        msg, _ = run(fake, env={})
+        text = "".join(f"{k}={v}\n" for k, v in CREDS.items())
+        fake = Fake([item("p - 01 - A")], environ={}, files={f"{PROJ}/.env": (text, 0o600)})
+        msg, _ = run(fake)
         self.assertIsNone(msg)
         self.assertIn("build_plan", fake.calls)
 
     def test_env_file_is_passed_through(self):
-        fake = Fake([item("p - 01 - A")])
+        fake = Fake([item("p - 01 - A")], files={"custom.env": ("", 0o600)})
         run(fake, "--env-file", "custom.env")
         self.assertIn(("load_env", "custom.env"), fake.calls)
+        self.assertIn("build_plan", fake.calls)
 
     def test_missing_env_file_names_the_path(self):
         fake = Fake([])
-
-        def missing(env_file=None, **k):
-            raise FileNotFoundError(2, "No such file", env_file)
-        patches = fake.install()
-        patches["load_env"] = missing
-        fake.install = lambda: patches
         msg, _ = run(fake, "--env-file", "nope/.env")
         assert_friendly(self, msg)
         self.assertIn("nope/.env", msg)
@@ -225,15 +247,18 @@ class Credentials(unittest.TestCase):
 
 class Refusals(unittest.TestCase):
     REFUSALS = [
-        refusal("p - 01 - A", '"p - 01 - A" already exists outside 100 at https://x/1 — not touching it.',
+        refusal("p - 01 - A",
+                '"p - 01 - A" already exists outside 100 at https://x/1 — not touching it.',
                 "Use a distinct --prefix."),
-        refusal("p - 02 - B", '"p - 02 - B" already exists outside 100 at https://x/2 — not touching it.',
+        refusal("p - 02 - B",
+                '"p - 02 - B" already exists outside 100 at https://x/2 — not touching it.',
                 "Use a distinct --prefix."),
     ]
 
     def test_refused_pages_are_not_offered_for_hand_over(self):
         items = [item("p - 01 - A", managed="none"), item("p - 02 - B", managed="none")]
-        refs = [refusal("p - 01 - A", '"p - 01 - A" already exists outside 100.', "Use a distinct --prefix.")]
+        refs = [refusal("p - 01 - A", '"p - 01 - A" already exists outside 100.',
+                        "Use a distinct --prefix.")]
         refs[0].page_id = "id-p - 01 - A"
         msg, out = run(Fake(items, refusals=refs), "--dry-run")
         self.assertIn("Ownership: 1 not published by this tool, 1 refused", out)
@@ -272,11 +297,12 @@ class Refusals(unittest.TestCase):
 
 class Handover(unittest.TestCase):
     ITEMS = [item("p - 01 - A", managed="none", version=7),
-             item("p - 02 - B", managed="other", version=2), item("p - 03 - C", action="CREATE", managed="new")]
+             item("p - 02 - B", managed="other", version=2),
+             item("p - 03 - C", action="CREATE", managed="new")]
 
     def test_non_tty_without_adopt_refuses_and_lists_pages(self):
         def execute(plan, **k):
-            self.assertIsNone(k["confirm_handover"])
+            self.assertIsNone(k["confirm"])
             raise cp.HandoverRequired([i for i in plan.items if i.managed in ("none", "other")])
         msg, _ = run(Fake(self.ITEMS, execute=execute, tty=False))
         assert_friendly(self, msg)
@@ -298,7 +324,7 @@ class Handover(unittest.TestCase):
     def test_tty_prompt_wording_and_typed_count(self):
         def execute(plan, **k):
             items = [i for i in plan.items if i.managed in ("none", "other")]
-            if not k["confirm_handover"](items):
+            if not k["confirm"](items):
                 raise cp.HandoverDeclined(items)
             return types.SimpleNamespace(written=[], pending=[], marker_failures=[], error=None)
 
@@ -310,7 +336,8 @@ class Handover(unittest.TestCase):
                 self.assertEqual(fake.prompts, [
                     "Take over and replace 2 page(s) you did not publish? "
                     "Type the number 2 to confirm: "])
-                self.assertIn("p - 01 - A  (not published by this tool, version 7, last edited 2026-10-01 10:00 UTC)", out)
+                self.assertIn("p - 01 - A  (not published by this tool, version 7, "
+                              "last edited 2026-10-01 10:00 UTC)", out)
                 if ok:
                     self.assertIsNone(msg)
                 else:
@@ -348,13 +375,15 @@ class Output(unittest.TestCase):
         self.assertIsNone(msg)
         self.assertTrue(out.startswith(self.V11_TABLE), out)
         self.assertIn("Ownership: 1 new, 2 published by this tool from this source", out)
-        self.assertIn("3 pages DRY-RUN (nothing written) — space ENG, parent 100, prefix 'p'", out)
+        self.assertIn("3 pages DRY-RUN (nothing written) — space ENG, parent 100, "
+                      "prefix 'p'", out)
         self.assertNotIn("execute_plan", [c[0] for c in fake.calls if isinstance(c, tuple)])
 
     def test_marker_failure_is_reported_not_fatal(self):
         def execute(plan, **k):
             return types.SimpleNamespace(written=[(plan.items[0], "1")], pending=[],
-                                         marker_failures=[(plan.items[0], "1", OSError("boom"))], error=None)
+                                         marker_failures=[(plan.items[0], "1", OSError("boom"))],
+                                         error=None)
         msg, out = run(Fake(self.ITEMS, execute=execute))
         self.assertIsNone(msg)
         self.assertIn("Warning: p - 01 - A was written but could not be marked as managed", out)
@@ -406,41 +435,35 @@ class FriendlyErrors(unittest.TestCase):
         msg, _ = run(Fake([], http_error=e))
         self.assertIn("bad token ****", msg)
 
-    def with_patch(self, **patches):
-        fake = Fake([])
-        base = fake.install()
-        base.update(patches)
-        fake.install = lambda: base
-        return fake
-
     def test_bad_token_is_caught_before_planning_and_names_its_file(self):
         for me in ({"authenticated": False, "status": 200, "type": "anonymous"},
                    {"authenticated": False, "status": 401}):
             with self.subTest(me=me):
-                fake = self.with_patch(whoami=lambda me=me: me)
-                fake.resolved = {"CONFLUENCE_API_TOKEN": (TOKEN, "/home/u/.config/confluence-publisher/.env")}
+                env = {k: v for k, v in CREDS.items() if k != "CONFLUENCE_API_TOKEN"}
+                files = {f"{USER_CONFIG}/.env": (f"CONFLUENCE_API_TOKEN={TOKEN}\n", 0o600)}
+                fake = Fake([], me=me, environ=env, files=files)
                 msg, _ = run(fake)
                 assert_friendly(self, msg)
-                self.assertTrue(msg.startswith("Error: Confluence did not accept your email/API token.\n"
-                                               "Fix: Check CONFLUENCE_EMAIL and CONFLUENCE_API_TOKEN in "
-                                               "/home/u/.config/confluence-publisher/.env"), msg)
+                self.assertTrue(msg.startswith(
+                    "Error: Confluence did not accept your email/API token.\n"
+                    "Fix: Check CONFLUENCE_EMAIL and CONFLUENCE_API_TOKEN in "
+                    "/home/u/.config/confluence-publisher/.env"), msg)
                 self.assertNotIn("build_plan", fake.calls)
 
     def test_bad_token_from_environment(self):
-        fake = self.with_patch(whoami=lambda: {"authenticated": False, "status": 403})
+        fake = Fake([], me={"authenticated": False, "status": 403})
         msg, _ = run(fake)
         self.assertIn("in your environment variables", msg)
         self.assertIn("Confluence said: 403", msg)
 
     def test_authenticated_404_names_the_failing_lookup(self):
-        def fail(*a, **k):
-            raise http_error(404, "Not Found", "raw read detail")
-        msg, _ = run(self.with_patch(resolve_space_id=fail))
+        fail = http_error(404, "Not Found", "raw read detail")
+        msg, _ = run(Fake([], space_error=fail))
         assert_friendly(self, msg)
         self.assertIn("no space with the key 'ENG'", msg)
         self.assertIn("raw read detail", msg)
         self.assertNotIn("--parent", msg)
-        msg, _ = run(self.with_patch(build_plan=fail))
+        msg, _ = run(Fake([], http_error=fail))
         assert_friendly(self, msg)
         self.assertIn("Page 100 was not found or is not visible to you", msg)
 
@@ -458,24 +481,12 @@ class FriendlyErrors(unittest.TestCase):
         self.assertIn(f"Could not reach Confluence at {BASE}", msg)
 
     def test_unknown_space(self):
-        fake = Fake([])
-        patches = fake.install()
-
-        def no_space(key):
-            raise SystemExit(f"Space not found for key: {key}")
-        patches["resolve_space_id"] = no_space
-        fake.install = lambda: patches
-        msg, _ = run(fake)
+        msg, _ = run(Fake([], space_error=errors.SpaceNotFound("ENG")))
         assert_friendly(self, msg)
         self.assertIn("'ENG'", msg)
 
     def test_not_a_folder(self):
-        saved = list(ARGV)
-        ARGV[0] = "no/such/dir/for/tests"
-        try:
-            msg, _ = run(Fake([]))
-        finally:
-            ARGV[:] = saved
+        msg, _ = run(Fake([]), argv=["no/such/dir/for/tests", *ARGV[1:]])
         assert_friendly(self, msg)
         self.assertIn("Not a folder: no/such/dir/for/tests", msg)
 
@@ -506,27 +517,42 @@ class EndToEnd(unittest.TestCase):
         self.f.add("5", "Other team")
 
     def main(self, *extra, tty=False, answer=None, on_ask=None):
-        from _fake_confluence import installed
+        """One command over the real Planner/PlanExecutor and the fake transport."""
+        from _support import api
+        creds = config.Credentials(BASE, "x@example.invalid", TOKEN)
         prompts, out = [], io.StringIO()
-        patches = {"resolve_space_id": lambda k: "S1",
-                   "load_env": lambda *a, **k: {}, "_stdin_is_tty": lambda: tty,
-                   "_ask": lambda p: prompts.append(p) or (on_ask and on_ask()) or answer}
-        saved = {n: getattr(cp, n) for n in patches}
-        saved_read = plan.read_doc_set                    # looked up by plan.build_plan
+        top, insitu = self.DOCS
+        docs = docset.DocSet(tuple(docset.SourceDoc(t, md) for t, md in top),
+                             tuple(docset.SourceDoc(t, md) for t, md in insitu))
+
+        class Client(api.ConfluenceClient):
+            """The fake has no space-key lookup; everything else is the real client."""
+            def resolve_space_id(self, key):
+                return "S1"
+
+        class Loader:
+            def load(self, env_file=None):
+                return creds
+
+        def ask(prompt):
+            prompts.append(prompt)
+            return (on_ask and on_ask()) or answer
+
+        args = cp.build_parser().parse_args(
+            [DOCS, "--space", "ENG", "--parent", "10", "--prefix", "p", *extra])
+        cmd = cp.PublishCommand.from_args(
+            args, out, credential_loader=Loader(),
+            client_factory=lambda creds: Client(creds, self.f, read_file=lambda p: b"png"),
+            docset_loader=lambda path: docs,
+            # no image folder: these docs have no diagrams and the test writes no files
+            planner_factory=lambda client, a: plan.Planner(
+                client, storage.StorageConverter(a.prefix, None, a.img_width)),
+            prompt=cp.HandoverPrompt(out, ask=ask, stdin=FakeStdin(tty)))
         try:
-            plan.read_doc_set = lambda d: self.DOCS
-            for n, fn in patches.items():
-                setattr(cp, n, fn)
-            with environ(CREDS), installed(self.f):
-                try:
-                    cp.main([DOCS, "--space", "ENG", "--parent", "10", "--prefix", "p", *extra], out=out)
-                    return None, out.getvalue(), prompts
-                except SystemExit as e:
-                    return e.code, out.getvalue(), prompts
-        finally:
-            plan.read_doc_set = saved_read
-            for n, fn in saved.items():
-                setattr(cp, n, fn)
+            cmd.run()
+            return None, out.getvalue(), prompts
+        except SystemExit as e:
+            return e.code, out.getvalue(), prompts
 
     def test_sibling_tree_match_refused_with_zero_writes(self):
         self.f.add("12", "p - 02 - Arch", parent="5")
@@ -562,7 +588,8 @@ class EndToEnd(unittest.TestCase):
         msg, _, prompts = self.main(tty=True, answer="1", on_ask=colleague_saves)
         self.assertEqual(len(prompts), 1)
         assert_friendly(self, msg)
-        self.assertIn('"p - 01 - Intro" was edited in Confluence while this run was publishing', msg)
+        self.assertIn('"p - 01 - Intro" was edited in Confluence while this run was '
+                      'publishing', msg)
         self.assertIn("Fix: Re-run with --dry-run to see its new state, then publish again.", msg)
         self.assertIn("409", msg)
         self.assertIn("Written (0):", msg)

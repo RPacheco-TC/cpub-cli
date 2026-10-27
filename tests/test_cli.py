@@ -10,25 +10,13 @@ import io
 import os
 import unittest
 
-from _support import cli as cp, pkg
+from _support import cli as cp, config, pkg
 import _support
 
 ARGS = ["docs", "--space", "X", "--parent", "1", "--dry-run"]
 NO_CREDS = {k: v for k, v in os.environ.items() if not k.startswith("CONFLUENCE_")}
 DUMMY_CREDS = {**NO_CREDS, "CONFLUENCE_BASE_URL": "https://example.invalid/wiki",
                "CONFLUENCE_EMAIL": "x@example.invalid", "CONFLUENCE_API_TOKEN": "t"}
-
-
-@contextlib.contextmanager
-def environ(values):
-    """Temporarily replace ``os.environ`` with ``values`` (lighter than unittest.mock,
-    which drags in asyncio and doubles the suite's import time)."""
-    saved = dict(os.environ)
-    os.environ.clear(); os.environ.update(values)
-    try:
-        yield
-    finally:
-        os.environ.clear(); os.environ.update(saved)
 
 
 def parse(*extra):
@@ -64,31 +52,27 @@ class ImgWidthArgument(unittest.TestCase):
         self.assertIsNone(args.img_width)
 
 
-@contextlib.contextmanager
-def no_env_files():
-    """Stub the credential-file lookup so a developer's real ./.env is never read."""
-    saved = cp.load_env, cp.env_search_paths
-    cp.load_env = lambda *a, **k: {}
-    cp.env_search_paths = lambda *a, **k: []
-    try:
-        yield
-    finally:
-        cp.load_env, cp.env_search_paths = saved
+def run_main(argv, environ):
+    """Run the command with the real credential loader on ``environ`` and no files,
+    so a developer's real ./.env is never read (nothing is patched)."""
+    loader = config.CredentialLoader(environ=environ, cwd="/nonexistent",
+                                     config_dir="/nonexistent", read_file=lambda p: None)
+    args = cp.build_parser().parse_args(argv)
+    cp.PublishCommand.from_args(args, io.StringIO(), credential_loader=loader).run()
 
 
 class MainPreflight(unittest.TestCase):
-    """main() keeps its early exits; both happen before any network call."""
+    """The command keeps its early exits; both happen before any network call."""
 
     def test_missing_credentials(self):
-        with environ(NO_CREDS), no_env_files():
-            with self.assertRaises(SystemExit) as ctx:
-                cp.main([*ARGS, "--img-width", "700"])
+        with self.assertRaises(SystemExit) as ctx:
+            run_main([*ARGS, "--img-width", "700"], NO_CREDS)
         self.assertIn("Missing Confluence credential(s)", str(ctx.exception.code))
 
     def test_not_a_folder(self):
-        with environ(DUMMY_CREDS), no_env_files():
-            with self.assertRaises(SystemExit) as ctx:
-                cp.main(["no/such/dir/for/tests", "--space", "X", "--parent", "1", "--dry-run"])
+        with self.assertRaises(SystemExit) as ctx:
+            run_main(["no/such/dir/for/tests", "--space", "X", "--parent", "1", "--dry-run"],
+                     DUMMY_CREDS)
         self.assertIn("Not a folder", str(ctx.exception.code))
 
 

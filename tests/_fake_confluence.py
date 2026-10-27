@@ -1,35 +1,46 @@
-"""An in-memory Confluence Cloud that answers ``confluence_publish._req``.
+"""An in-memory Confluence Cloud, injected as the client's HTTP transport.
 
-It records every request as ``(method, path)`` so tests can assert, for
-example, that a refused plan made zero POST/PUT calls. Offline: no sockets, no
-files. Attachment uploads are routed through the same recorder without reading
-the (non-existent) PNG files.
+``FakeConfluence`` has the :class:`~confluence_publisher.api.HttpTransport`
+interface (``request``), so the real :class:`ConfluenceClient` runs on top of
+it: ``fake.client()``. It records every request as ``(method, path)`` so tests
+can assert, for example, that a refused plan made zero POST/PUT calls.
+Offline: no sockets, no files (attachment bytes come from ``read_file``).
 """
-import contextlib
 import json
+import re
 import urllib.error
 import urllib.parse
 
-from _support import api, plan
+from _support import api, config
 
 BASE = "https://example.invalid/wiki"
+CREDS = config.Credentials(BASE, "x@example.invalid", "token")
+_FILENAME_RE = re.compile(rb'filename="([^"]+)"')
 
 
 class FakeConfluence:
     def __init__(self, space_id="S1"):
         self.space_id = space_id
-        self.pages = {}         # id -> dict(title, spaceId, parentId, status, version, body, props, atts)
+        # id -> dict(title, spaceId, parentId, status, version, body, props, atts)
+        self.pages = {}
         self.calls = []         # (method, path) in order
         self.fail_on = None     # (method, path_prefix) -> raise HTTP 500 once matched
         self.ancestor_page_size = None   # paginate the ancestors listing (tests _links.next)
         # /rest/api/user/current: an HTTP status to fail with, or the JSON to return
-        self.user = {"type": "known", "accountId": "acc-1", "displayName": "Dev", "email": "x@example.invalid"}
+        self.user = {"type": "known", "accountId": "acc-1", "displayName": "Dev",
+                     "email": "x@example.invalid"}
         self._next = 1000
 
+    def client(self, credentials=CREDS):
+        """A real ConfluenceClient whose requests all land on this fake."""
+        return api.ConfluenceClient(credentials, self, read_file=lambda path: b"png")
+
     # --- fixtures ---------------------------------------------------------
-    def add(self, page_id, title, parent=None, space=None, status="current", marker=None, version=3):
+    def add(self, page_id, title, parent=None, space=None, status="current", marker=None,
+            version=3):
         page = {"title": title, "spaceId": space or self.space_id, "parentId": parent,
-                "status": status, "version": version, "body": "<p>old</p>", "props": {}, "atts": set()}
+                "status": status, "version": version, "body": "<p>old</p>", "props": {},
+                "atts": set()}
         if marker is not None:
             page["props"]["cpub-managed"] = {"id": f"prop{page_id}", "value": marker, "version": 1}
         self.pages[str(page_id)] = page
@@ -52,15 +63,20 @@ class FakeConfluence:
         e.detail = msg
         return e
 
-    def req(self, method, url, data=None, headers=None):
+    def request(self, method, url, data=None, headers=None):
         u = urllib.parse.urlsplit(url)
         path = u.path[len("/wiki"):] if u.path.startswith("/wiki") else u.path
         q = dict(urllib.parse.parse_qsl(u.query))
         self.calls.append((method, path))
         if self.fail_on and method == self.fail_on[0] and path.startswith(self.fail_on[1]):
             raise self._err(500, url, "boom")
-        body = json.loads(data) if data and headers and "json" in headers.get("Content-Type", "") else None
+        is_json = data and headers and "json" in headers.get("Content-Type", "")
+        body = json.loads(data) if is_json else None
         parts = path.strip("/").split("/")
+        if method == "POST" and parts[:3] == ["rest", "api", "content"] \
+                and parts[4:] == ["child", "attachment"]:
+            self.pages[parts[3]]["atts"].add(_FILENAME_RE.search(data).group(1).decode())
+            return 200, {}
         if path == "/rest/api/user/current" and method == "GET":
             if isinstance(self.user, int):
                 raise self._err(self.user, url, "Unauthorized")
@@ -69,14 +85,16 @@ class FakeConfluence:
             raise AssertionError(f"unexpected endpoint {method} {path}")
         parts = parts[2:]
         if method == "GET" and parts[0] == "spaces" and parts[2:] == ["pages"]:
-            return 200, {"results": [{"id": i, "title": p["title"]} for i, p in self.pages.items()
+            return 200, {"results": [{"id": i, "title": p["title"]}
+                                     for i, p in self.pages.items()
                                      if p["spaceId"] == parts[1]], "_links": {}}
         if parts[0] != "pages":
             raise AssertionError(f"unexpected endpoint {method} {path}")
         if method == "POST" and len(parts) == 1:
             pid = str(self._next); self._next += 1
-            self.pages[pid] = {"title": body["title"], "spaceId": body["spaceId"], "parentId": body["parentId"],
-                               "status": "current", "version": 1, "body": body["body"]["value"],
+            self.pages[pid] = {"title": body["title"], "spaceId": body["spaceId"],
+                               "parentId": body["parentId"], "status": "current",
+                               "version": 1, "body": body["body"]["value"],
                                "props": {}, "atts": set()}
             return 200, {"id": pid}
         pid = parts[1]
@@ -88,13 +106,15 @@ class FakeConfluence:
             if method == "GET":
                 return 200, {"id": pid, "title": page["title"], "spaceId": page["spaceId"],
                              "parentId": page["parentId"], "status": page["status"],
-                             "version": {"number": page["version"], "createdAt": "2026-10-01T10:00:00Z"},
+                             "version": {"number": page["version"],
+                                         "createdAt": "2026-10-01T10:00:00Z"},
                              "_links": {"webui": f"/spaces/X/pages/{pid}"}}
             if method == "PUT":
                 assert "parentId" not in body, "updates must never move a page"
                 if body["version"]["number"] != page["version"] + 1:
                     raise self._err(409, url, "Version must be incremented")
-                page.update(title=body["title"], body=body["body"]["value"], version=page["version"] + 1)
+                page.update(title=body["title"], body=body["body"]["value"],
+                            version=page["version"] + 1)
                 return 200, {"id": pid}
         if rest == ["ancestors"] and method == "GET":
             anc = [{"id": a, "type": "page"} for a in self.ancestors(pid)]
@@ -103,7 +123,8 @@ class FakeConfluence:
             start, size = int(q.get("cursor", 0)), self.ancestor_page_size
             nxt = (f"/wiki/api/v2/pages/{pid}/ancestors?limit={size}&cursor={start + size}"
                    if start + size < len(anc) else None)
-            return 200, {"results": anc[start:start + size], "_links": {"next": nxt} if nxt else {}}
+            return 200, {"results": anc[start:start + size],
+                         "_links": {"next": nxt} if nxt else {}}
         if rest == ["attachments"] and method == "GET":
             return 200, {"results": [{"title": t} for t in sorted(page["atts"])]}
         if rest[0] == "properties":
@@ -114,7 +135,8 @@ class FakeConfluence:
                                "version": {"number": p["version"]}}]}
             if method == "POST":
                 assert body["key"] not in page["props"]
-                page["props"][body["key"]] = {"id": f"prop{pid}", "value": body["value"], "version": 1}
+                page["props"][body["key"]] = {"id": f"prop{pid}", "value": body["value"],
+                                              "version": 1}
                 return 200, {}
             if method == "PUT":
                 p = page["props"][body["key"]]
@@ -122,24 +144,3 @@ class FakeConfluence:
                 p.update(value=body["value"], version=p["version"] + 1)
                 return 200, {}
         raise AssertionError(f"unexpected endpoint {method} {path}")
-
-    def upload(self, page_id, filepath, filename):
-        self.calls.append(("POST", f"/rest/api/content/{page_id}/child/attachment"))
-        self.pages[page_id]["atts"].add(filename)
-        return {}
-
-
-@contextlib.contextmanager
-def installed(fake):
-    """Route the publisher's REST layer to ``fake`` for the duration of the block."""
-    targets = [(api, "_req", fake.req),                                   # looked up by every api call
-               (api, "_cfg", lambda: (BASE, "x@example.invalid", "token")),
-               (plan, "upload_attachment", fake.upload)]                   # looked up by plan's writer
-    saved = [(m, n, getattr(m, n)) for m, n, _ in targets]
-    for m, n, f in targets:
-        setattr(m, n, f)
-    try:
-        yield fake
-    finally:
-        for m, n, f in saved:
-            setattr(m, n, f)
