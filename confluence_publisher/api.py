@@ -293,26 +293,45 @@ class ConfluenceClient:
         return index
 
 
-    def get_page_info(self, page_id):
-        """Fetch a page's metadata (no body): what the plan shows and the fence checks.
+    def get_page_info(self, page_id, with_body=False):
+        """Fetch a page's metadata: what the plan shows and the fence checks.
 
         :param page_id: the page id.
+        :param with_body: also read the storage body, to report its size (note
+            mode's replace preview); the same single request either way.
         :returns: ``id``, ``title``, ``spaceId``, ``parentId``, ``status``,
-            ``version`` (int), ``last_edited`` (ISO time of the current version) and
-            ``webui`` (absolute page URL, or ``None``).
+            ``version`` (int), ``last_edited`` (ISO time of the current version),
+            ``webui`` (absolute page URL, or ``None``) and, with ``with_body``,
+            ``body_size`` (UTF-8 bytes of the current storage body).
         :rtype: dict
         """
         base = self.base_url
-        d = self._req("GET", f"{base}/api/v2/pages/{page_id}")[1]
+        query = "?body-format=storage" if with_body else ""
+        d = self._req("GET", f"{base}/api/v2/pages/{page_id}{query}")[1]
         ver = d.get("version") or {}
         webui = (d.get("_links") or {}).get("webui")
-        return {"id": str(d.get("id", page_id)), "title": d.get("title"),
+        info = {"id": str(d.get("id", page_id)), "title": d.get("title"),
                 "spaceId": None if d.get("spaceId") is None else str(d["spaceId"]),
                 "parentId": None if d.get("parentId") is None else str(d["parentId"]),
                 "status": d.get("status"), "version": ver.get("number"),
                 "last_edited": ver.get("createdAt"),
                 "webui": base + webui if webui else None}
+        if with_body:
+            body = ((d.get("body") or {}).get("storage") or {}).get("value") or ""
+            info["body_size"] = len(body.encode())
+        return info
 
+    def get_space(self, space_id):
+        """Fetch a space's key, name and homepage id (v2 ``spaces/{id}``).
+
+        :param space_id: numeric space id.
+        :returns: ``id``, ``key``, ``name``, ``homepageId`` (``None`` when absent).
+        :rtype: dict
+        """
+        d = self._req("GET", f"{self.base_url}/api/v2/spaces/{space_id}")[1]
+        home = d.get("homepageId")
+        return {"id": str(d.get("id", space_id)), "key": d.get("key"),
+                "name": d.get("name"), "homepageId": None if home is None else str(home)}
 
     def get_ancestor_ids(self, page_id):
         """Return the ids of every ancestor of a page (v2 ``ancestors``, all pages).

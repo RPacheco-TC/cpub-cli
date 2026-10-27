@@ -84,7 +84,7 @@ class PlanExecutor:
             pid = it.page_id
             if it.writes_body:
                 self._upload_missing(pid, it.attachments)
-                c.update_page(pid, it.title, it.storage, "republish",
+                c.update_page(pid, it.title, it.storage, it.version_message,
                               expected_version=it.version)
                 if it.managed != "same":
                     self._mark(it, pid, report)
@@ -94,7 +94,7 @@ class PlanExecutor:
         report.partial = (it, pid)
         self._mark(it, pid, report)     # right after create: a failed upload re-runs prompt-free
         if self._upload_missing(pid, it.attachments):
-            c.update_page(pid, it.title, it.storage, "link diagram attachments",
+            c.update_page(pid, it.title, it.storage, it.resave_message,
                           expected_version=(created.get("version") or {}).get("number", 1))
         report.partial = None
         return pid

@@ -73,7 +73,7 @@ class MainPreflight(unittest.TestCase):
         with self.assertRaises(SystemExit) as ctx:
             run_main(["no/such/dir/for/tests", "--space", "X", "--parent", "1", "--dry-run"],
                      DUMMY_CREDS)
-        self.assertIn("Not a folder", str(ctx.exception.code))
+        self.assertIn("No such file or folder: no/such/dir/for/tests", str(ctx.exception.code))
 
 
 class PythonVersionGuard(unittest.TestCase):

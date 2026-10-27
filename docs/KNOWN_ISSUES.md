@@ -267,3 +267,60 @@ is written then.
 ### TODO
 
 - [ ] Retry the marker write once before reporting it.
+
+---
+
+## A single note's links to unpublished notes point at missing pages
+
+### Symptom
+
+Publishing one note (`--to` / `--under`) turns every `[[Other note]]` into a
+Confluence link by title, as in a doc set. If `Other note` was never published
+to that space, the link shows as a link to a page that does not exist, and
+clicking it offers to create it.
+
+### Root cause
+
+Planned behaviour for a later phase (S2.5, Phase 2): in note mode each link
+target will be looked up, and missing ones left as plain text with a warning.
+Phase 1b converts links exactly as set mode does, where every target is created
+in the same run.
+
+### Workaround
+
+Publish the linked notes too (or the whole folder), or write the reference as
+plain text in that note.
+
+### TODO
+
+- [ ] S2.5: look up `[[targets]]` in note mode; degrade missing ones to text and
+  list them once.
+
+---
+
+## A new note page's first version has no "Published from Obsidian" comment
+
+### Symptom
+
+After `--under` creates a page from a note, the page history shows version 1
+with an empty version comment. Every later update reads
+`Published from Obsidian: <filename>`, and so does the second save of a new
+page that has diagrams (its body is saved again once the images are uploaded).
+
+### Root cause
+
+Confluence's v2 "create page" call drops any version message (confirmed live
+on the test page). The only way to label version 1 would be an extra save right
+after the create: a second version with no change in content, added to the
+history of every new page just for a label.
+
+### Why this is acceptable
+
+The version comment is information for readers, not what the tool relies on.
+Pages the tool published are identified by their `cpub-managed` content
+property (the ownership marker), which is written for every created page,
+labelled or not.
+
+### TODO
+
+- [ ] Revisit if Confluence's create call starts accepting a version message.

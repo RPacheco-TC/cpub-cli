@@ -23,7 +23,16 @@ python3.12 confluence_publish.py DOCS_DIR --space KEY --parent PAGE_ID --prefix 
 
 # Publish for real
 python3.12 confluence_publish.py DOCS_DIR --space KEY --parent PAGE_ID --prefix REPO
+
+# A single note: replace a page (title kept) or create a child page
+python3.12 confluence_publish.py NOTE.md --to PAGE_URL_OR_ID [--title T] --dry-run
+python3.12 confluence_publish.py NOTE.md --under PAGE_URL_OR_ID [--title T]
 ```
+
+- **Mode is chosen by the path**: a `.md` file → note mode, a folder → set mode (`ModeResolver`, before any I/O). Note mode needs exactly one of `--to` / `--under` (`--parent` is accepted as `--under`); set mode needs `--parent` (or its alias `--under`) and rejects `--to` / `--title`.
+- **Every page argument takes an id or a page URL** (`…/spaces/KEY/pages/ID[/slug]`, `…/pages/edit-v2/ID`, `…/viewpage.action?pageId=ID`), parsed by `PageRef.parse` with no network call; folder URLs, `/wiki/x/` short links, unknown forms and other hosts are refused locally.
+- **`--space` is optional** in both modes: the space comes from the page; when given it is checked against the page (refusal on mismatch). With `--space`, set mode makes exactly the v1.1/R2 request sequence.
+- **Note mode**: no title prefix by default; `--to` replaces exactly that page (no title search, never moved, title kept unless `--title`, the space homepage refused); `--under` titles the page `--title` > frontmatter `title:` > file stem and is fenced like a set. The marker source is the note's **filename**; the version comment is `Published from Obsidian: <filename>`. Diagrams render to `AppDirs().note_img_dir` (`$XDG_CACHE_HOME/confluence-publisher/img`), never into the vault.
 
 - **Credential lookup order, per variable, first hit wins:** real env vars → `--env-file PATH` → `./.env` (cwd) → `$XDG_CONFIG_HOME/confluence-publisher/.env` (default `~/.config/…`). `CredentialLoader` parses `KEY=VALUE` / `export` / quotes / comments without executing anything; a missing `--env-file` is an error, a missing `./.env` or user file is not; a token file with `mode & 0o077` gets a `chmod 600` warning and the run continues. The `set -a; . ./.env; set +a` workflow still works (env wins).
 
@@ -46,27 +55,31 @@ There is **no build, no linter, and no dependency install** — pure Python 3.12
 
 ## Architecture: classes and modules
 
-The package is **class-based with constructor injection** (decision D24): behaviour and state live in classes whose dependencies are passed to the constructor; module level holds only constants, compiled regexes and short stateless private helpers. Nothing reads `os.environ` except `CredentialLoader`, and there is no module-level mutable state.
+The package is **class-based with constructor injection** (decision D24): behaviour and state live in classes whose dependencies are passed to the constructor; module level holds only constants, compiled regexes and short stateless private helpers. Nothing reads `os.environ` except `CredentialLoader` and `AppDirs`, and there is no module-level mutable state.
 
 ```
 confluence_publish.py   thin entry shim: from confluence_publisher.cli import main (importing the package runs the guard)
 confluence_publisher/
   __init__.py      Python >= 3.12 guard (3.9-parseable) + __version__
   __main__.py      python3.12 -m confluence_publisher (same usage/error lines as the shim)
-  cli.py           PublishCommand (the ONE composition root), ArgumentParserFactory;
-                   main()/build_parser() entry points
-  cli_output.py    PlanPrinter (table, ownership, footer), HandoverPrompt (typed-count prompt)
+  cli.py           PublishCommand (the ONE composition root), ArgumentParserFactory,
+                   ModeResolver -> RunMode (note vs folder, flag checks); main()/build_parser()
+  cli_output.py    PlanPrinter (table, ownership, replace preview, footers), HandoverPrompt
   cli_errors.py    ErrorTranslator (every expected failure -> CliError sentence + Fix:)
   errors.py        PublisherError base: CliError, MissingCredentials, SpaceNotFound, NotAFolder,
                    PlanRefused, HandoverRequired, HandoverDeclined, PlanExecutionError
   config.py        Credentials (frozen: base_url, email, token, sources; mask(), token_source),
-                   CredentialLoader (env > --env-file > ./.env > ~/.config/..., chmod warning)
+                   CredentialLoader (env > --env-file > ./.env > ~/.config/..., chmod warning),
+                   AppDirs (XDG config/cache folders; the only other environment reader)
   api.py           HttpTransport (urllib; keeps HTTPError.detail), ConfluenceClient(credentials,
                    transport): pages, attachments, ancestors, title index, whoami, space lookup,
                    cpub-managed marker
-  docset.py        SourceDoc, DocSet (numbered docs + In Situ/, duplicate_titles())
-  plan.py          PlanItem, Refusal, Plan (refusals(), handover_items(), rows()),
-                   Planner(client, converter).build(docset, space_id, parent_id) — read-only
+  docset.py        SourceDoc, DocSet (numbered docs + In Situ/, duplicate_titles()),
+                   SingleNote (one .md file; title/filename; frontmatter title: reader)
+  pageref.py       PageRef.parse(text, base_url): page id from an id or URL (pure, no network)
+  plan.py          PlanItem, Refusal, Plan (mode, space_info, refusals(), handover_items()),
+                   Planner(client, converter): build(source, space_id, parent_id) for a set or
+                   --under, build_replace(note, target_id, space_id) for --to — read-only
   executor.py      PlanExecutor(client).execute(...) — the ONLY writer; RunReport
   storage.py       FenceAwareExtractor (the one fence rule) -> TocExtractor, WikilinkExtractor,
                    CalloutExtractor; StorageConverter.convert(md) -> StorageDocument (.validate())

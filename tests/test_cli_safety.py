@@ -204,10 +204,12 @@ class Parser(unittest.TestCase):
         self.assertIsNone(failure)
         self.assertTrue(args.dry_run)
 
-    def test_help_leads_with_folder_example_and_names_the_real_command(self):
+    def test_help_leads_with_note_and_folder_examples_and_names_the_real_command(self):
         text = cp.build_parser().format_help()
-        self.assertIn("example:\n  python3.12 confluence_publish.py docs/", text)
-        self.assertLess(text.index("example:"), text.index("options:"))
+        self.assertIn("examples:\n  python3.12 confluence_publish.py note.md --to ", text)
+        self.assertIn("  python3.12 confluence_publish.py note.md --under ", text)
+        self.assertIn("  python3.12 confluence_publish.py docs/ --parent ", text)
+        self.assertLess(text.index("examples:"), text.index("options:"))
         self.assertIn("~/.config/confluence-publisher/.env", text)
         for word in ("cpub", "setup", "--yes"):
             self.assertNotIn(word, text)
@@ -467,6 +469,16 @@ class FriendlyErrors(unittest.TestCase):
         assert_friendly(self, msg)
         self.assertIn("Page 100 was not found or is not visible to you", msg)
 
+    def test_space_by_id_404_is_not_blamed_on_the_page(self):
+        # F5: GET /api/v2/spaces/{id} (planner, after the page was read) answers 404
+        e = urllib.error.HTTPError(f"{BASE}/api/v2/spaces/202", 404, "Not Found", {}, None)
+        e.detail = "no space"
+        msg, _ = run(Fake([], http_error=e))
+        assert_friendly(self, msg)
+        self.assertIn("could not show the space of page 100", msg)
+        self.assertNotIn("was not found or is not visible", msg)
+        self.assertIn("no space", msg)
+
     def test_tls(self):
         err = urllib.error.URLError(ssl.SSLCertVerificationError(
             1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"))
@@ -488,7 +500,7 @@ class FriendlyErrors(unittest.TestCase):
     def test_not_a_folder(self):
         msg, _ = run(Fake([]), argv=["no/such/dir/for/tests", *ARGV[1:]])
         assert_friendly(self, msg)
-        self.assertIn("Not a folder: no/such/dir/for/tests", msg)
+        self.assertIn("No such file or folder: no/such/dir/for/tests", msg)
 
     def test_partial_write_lists_written_and_not_written(self):
         items = [item("p - 01 - A"), item("p - 02 - B"), item("p - 03 - C")]

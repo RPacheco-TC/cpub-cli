@@ -8,9 +8,10 @@ never touches file contents.
 """
 import dataclasses
 import pathlib
+import re
 import typing
 
-from .errors import NotAFolder
+from .errors import NotAFolder, NotAMarkdownFile
 
 #: Title of the container page for the ``In Situ/`` deep-dive folder (unprefixed).
 INSITU_TITLE = "In Situ"
@@ -30,11 +31,14 @@ class SourceDoc:
     :param path: the file it comes from, or ``None`` for an in-memory doc.
     :param placement: :data:`TOP`, :data:`CONTAINER` or :data:`IN_SITU`.
         A container has no Markdown: its body is fixed by the planner.
+    :param source_id: the ownership-marker source, or ``None`` for the
+        prefixed title (set mode); note mode uses the note's filename.
     """
     title: str
     markdown: str | None = None
     path: pathlib.Path | None = None
     placement: str = TOP
+    source_id: str | None = None
 
     def text(self) -> str:
         """The Markdown, read from :attr:`path` on demand."""
@@ -46,9 +50,13 @@ class SourceDoc:
 class PlanSource(typing.Protocol):
     """What the planner needs from anything it publishes.
 
-    :class:`DocSet` implements it; a single-note source will too, so the
-    planner (and every E0 guard) does not change when a new source appears.
+    :class:`DocSet` and :class:`SingleNote` implement it, so the planner (and
+    every E0 guard) does not change when a new source appears.
     """
+
+    #: ``"set"`` or ``"note"``; note mode adds the replace preview and the
+    #: ``Published from Obsidian`` version message.
+    kind: str
 
     def entries(self) -> typing.Iterable[SourceDoc]:
         """The entries in publish order; a :data:`CONTAINER` precedes its docs."""
@@ -67,6 +75,7 @@ class DocSet:
     top: tuple = ()
     insitu: tuple | None = None
     root: pathlib.Path | None = None
+    kind: typing.ClassVar[str] = "set"
 
     @classmethod
     def from_folder(cls, path) -> "DocSet":
@@ -119,3 +128,73 @@ class DocSet:
         """Titles produced more than once, sorted (titles are unique per space)."""
         titles = self.titles()
         return sorted({t for t in titles if titles.count(t) > 1})
+
+
+def read_frontmatter(md: str) -> dict:
+    """Read ``key: value`` lines of a leading ``---`` frontmatter block. Pure.
+
+    Optional single or double quotes around a value are removed; lists,
+    nesting and anything else are ignored. No YAML library, nothing executed.
+
+    :rtype: dict[str, str]
+    """
+    lines = md.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return {}
+    out = {}
+    for line in lines[1:]:
+        if line.strip() == "---":
+            return out
+        m = _FRONTMATTER_RE.match(line)
+        if m:
+            value = m.group(2).strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+                value = value[1:-1]
+            out[m.group(1)] = value
+    return {}                       # no closing ---: not frontmatter
+
+
+_FRONTMATTER_RE = re.compile(r"^([A-Za-z_][\w-]*):[ \t]*(.*)$")
+
+
+@dataclasses.dataclass(frozen=True)
+class SingleNote:
+    """One Obsidian note published as one page (S2.1/S2.2).
+
+    :param path: the ``.md`` file.
+    :param title: an explicit ``--title``, or ``None``.
+    :param markdown: the note text (read from ``path`` when ``None``).
+    """
+    path: pathlib.Path
+    title: str | None = None
+    markdown: str | None = None
+    kind: typing.ClassVar[str] = "note"
+
+    @classmethod
+    def from_file(cls, path, title=None) -> "SingleNote":
+        """Check the path is a ``.md`` file and read it.
+
+        :raises NotAMarkdownFile: for anything else.
+        """
+        p = pathlib.Path(path)
+        if not p.is_file() or p.suffix.lower() != ".md":
+            raise NotAMarkdownFile(path)
+        return cls(p, title, p.read_text())
+
+    @property
+    def filename(self) -> str:
+        """The note's filename: its marker source and version-message name."""
+        return pathlib.Path(self.path).name
+
+    def text(self) -> str:
+        return self.markdown if self.markdown is not None else pathlib.Path(self.path).read_text()
+
+    def resolved_title(self) -> str:
+        """``--title``, else frontmatter ``title:``, else the filename stem (AC-2.2.1)."""
+        if self.title:
+            return self.title
+        return read_frontmatter(self.text()).get("title") or pathlib.Path(self.path).stem
+
+    def entries(self):
+        yield SourceDoc(self.resolved_title(), self.text(), pathlib.Path(self.path),
+                        TOP, source_id=self.filename)

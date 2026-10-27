@@ -29,6 +29,7 @@ class FakeConfluence:
         # /rest/api/user/current: an HTTP status to fail with, or the JSON to return
         self.user = {"type": "known", "accountId": "acc-1", "displayName": "Dev",
                      "email": "x@example.invalid"}
+        self.homepage = "1"     # GET /spaces/{id} homepageId
         self._next = 1000
 
     def client(self, credentials=CREDS):
@@ -84,6 +85,9 @@ class FakeConfluence:
         if parts[:2] != ["api", "v2"]:
             raise AssertionError(f"unexpected endpoint {method} {path}")
         parts = parts[2:]
+        if method == "GET" and parts[0] == "spaces" and len(parts) == 2:
+            return 200, {"id": parts[1], "key": "ENG", "name": "Engineering",
+                         "homepageId": self.homepage}
         if method == "GET" and parts[0] == "spaces" and parts[2:] == ["pages"]:
             return 200, {"results": [{"id": i, "title": p["title"]}
                                      for i, p in self.pages.items()
@@ -108,6 +112,7 @@ class FakeConfluence:
                              "parentId": page["parentId"], "status": page["status"],
                              "version": {"number": page["version"],
                                          "createdAt": "2026-10-01T10:00:00Z"},
+                             "body": {"storage": {"value": page["body"]}},
                              "_links": {"webui": f"/spaces/X/pages/{pid}"}}
             if method == "PUT":
                 assert "parentId" not in body, "updates must never move a page"

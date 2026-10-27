@@ -5,9 +5,19 @@ Turn any code repository into a clean, numbered documentation set, then publish 
 There are two stages, and they are independent:
 
 1. **Generate** — point your own Claude at a repo and a spec (`template.yaml`); it writes a numbered Markdown doc set you review in Obsidian.
-2. **Publish** — `confluence_publish.py` uploads that doc set to Confluence Cloud as a page tree under one parent page, idempotently and safely.
+2. **Publish** — `confluence_publish.py` uploads that doc set to Confluence Cloud as a page tree under one parent page, idempotently and safely. It also publishes **a single note** to one page.
 
 The Markdown is the source of truth; Confluence is a derived view you can re-publish at any time.
+
+### Quick start: publish one note
+
+```bash
+cp .env.example .env && chmod 600 .env       # 1. fill in your site URL, email and API token
+python3.12 confluence_publish.py note.md --to https://your-company.atlassian.net/wiki/spaces/ENG/pages/123456789 --dry-run
+python3.12 confluence_publish.py note.md --to https://your-company.atlassian.net/wiki/spaces/ENG/pages/123456789
+```
+
+`--to` replaces that page's content (its title is kept); use `--under <page>` instead to create the note as a new child page. Paste the page URL straight from your browser — no space key or id needed. The first publish to a page you did not create with this tool asks you to confirm the hand-over once (see [Safety](#safety)).
 
 ---
 
@@ -75,14 +85,24 @@ Each of the three variables (`CONFLUENCE_BASE_URL`, `CONFLUENCE_EMAIL`, `CONFLUE
 
 The files use plain `KEY=VALUE` lines as in `.env.example` (`export KEY=VALUE`, `#` comments and quoted values are fine; nothing is executed). If the file that holds the token can be read by other users, the tool prints a one-line warning suggesting `chmod 600 <file>` and carries on. If a credential is still missing, the error names it and lists every place it looked.
 
-### 2. Choose the space and parent page
+### 2. Choose the parent page
 
-The tool publishes everything under **one parent page** you specify, and never touches anything outside it. You need two values:
+The tool publishes everything under **one parent page** you specify, and never touches anything outside it. You must create a **page** (not a folder) to hold the docs; everything is published as children of it (you need permission to add pages there). You can keep that page inside a Confluence folder for tidiness; the tool still targets the page.
 
-- **Space key** — the part after `/spaces/` in the URL: `…/wiki/spaces/`**`DOCS`**`/…`. A team space has a short key like `DOCS` or `ENG`; a personal space key starts with `~`.
-- **Parent page id** — you must create a **page** (not a folder) in that space to hold the docs; everything is published as children of it. Create it (you need permission to add pages there), then copy its id from the URL: `…/pages/`**`123456789`**`/…`. You can keep that page inside a Confluence folder for tidiness; the tool still targets the page.
+Every page argument (`--parent`, `--under`, `--to`) takes either the page **URL** copied from your browser or its numeric **id**:
 
-Tip: trial it in your **personal space** (`~yourname`) first, then repoint at the team space by changing `--space` and `--parent`.
+```
+https://your-company.atlassian.net/wiki/spaces/DOCS/pages/123456789/Service+X+Documentation
+https://your-company.atlassian.net/wiki/spaces/DOCS/pages/edit-v2/123456789
+https://your-company.atlassian.net/wiki/pages/viewpage.action?pageId=123456789
+123456789
+```
+
+A folder URL (`…/folder/…`), a short link (`…/wiki/x/…`), or a URL on another Confluence site is refused before anything is sent, with the reason.
+
+**`--space` is optional**: the space is taken from the page itself. If you do pass it (the part after `/spaces/`, e.g. `DOCS`, or `~yourname` for a personal space), the run stops if the page lives in a different space.
+
+Tip: trial it in your **personal space** first, then repoint at the team space by changing `--parent`.
 
 ### 3. Pick a unique prefix (when sharing a space)
 
@@ -102,17 +122,38 @@ Your Obsidian `[[wikilinks]]` keep working both ways: the files keep their origi
 
 ```bash
 # See exactly what would happen — writes nothing:
-python3.12 confluence_publish.py my-repo-docs --space DOCS --parent 123456789 --prefix langflow --dry-run
+python3.12 confluence_publish.py my-repo-docs --parent 123456789 --prefix langflow --dry-run
 
 # Publish for real:
-python3.12 confluence_publish.py my-repo-docs --space DOCS --parent 123456789 --prefix langflow
+python3.12 confluence_publish.py my-repo-docs --parent 123456789 --prefix langflow
 ```
+
+(`--under` works the same as `--parent` for a folder, and the v1.1 form with `--space DOCS` still works.)
 
 The tool prints a per-page plan (`CREATE` / `UPDATE`, with the actual prefixed titles) and how many diagrams each page carries, then who owns each page (see [Safety](#safety)) and, after a real publish, a link to the parent page. Re-running updates the same pages in place (matched by title, inside the parent only), so it is safe to run repeatedly. The dry-run runs the same checks as the real run: if the dry-run passes, the real run will not be refused.
 
 Optional: `--max-updates N` raises the cap on how many existing pages one run may update (default `25`, see [Safety](#safety)).
 
 Optional: `--img-width <px>` sets a display width on every Mermaid diagram (e.g. `--img-width 700`), so diagrams rarely need resizing in the Confluence editor (see [Troubleshooting](#troubleshooting)). Without it, diagrams keep their natural size and the output is unchanged.
+
+### Publish a single note
+
+Point the command at one `.md` file instead of a folder, and say where it goes:
+
+```bash
+# Replace the content of an existing page (its title, place and space stay the same):
+python3.12 confluence_publish.py "My Note.md" --to <page URL or id> --dry-run
+python3.12 confluence_publish.py "My Note.md" --to <page URL or id>
+
+# Create the note as a new child page (re-running updates that same page):
+python3.12 confluence_publish.py "My Note.md" --under <page URL or id>
+```
+
+- **`--to`** replaces exactly that page. Before writing it shows a **replace preview** — the page title, space, current version, when it was last edited, and the old and new size — and `--dry-run` stops there. The page keeps its title unless you pass `--title "New title"`. The version comment reads `Published from Obsidian: <filename>`. After the write it prints the page link and the page-history link, where the previous version can be restored.
+- **`--under`** creates a child page titled from `--title`, else the note's frontmatter `title:`, else the file name. Re-running finds and updates the same child. A page with that title elsewhere in the space is refused (use `--title` or `--to`).
+- **Safety is the same as for folders**: a page this tool published from the same note updates silently; any other page — written by hand, or published from a different note — needs the one-time hand-over (type the count, or `--adopt`). The space's **home page** can never be a `--to` target.
+- **No title prefix** by default in note mode (pass `--prefix` if you want one).
+- **Diagrams** are rendered into your user cache folder (`~/.cache/confluence-publisher/img`, or `$XDG_CACHE_HOME/confluence-publisher/img`), never next to the note, so your vault stays untouched. `--img-dir` still overrides it.
 
 ### What it produces
 
@@ -129,8 +170,8 @@ Optional: `--img-width <px>` sets a display width on every Mermaid diagram (e.g.
 The publisher may only overwrite a page it can prove it is allowed to. Every run follows these rules:
 
 - **Plan first, write second.** The whole run is planned and checked before the first write. If anything is refused, **nothing** is written and **every** problem is listed, not just the first one. `--dry-run` prints that same plan and stops.
-- **Only inside the parent.** A page counts as "already published" only if it sits **below** `--parent` (at any depth). A page with the same title anywhere else in the space, the parent page itself, or a page that is archived or in the trash is refused: `"<title>" already exists outside <parent> … — not touching it. Use a distinct --prefix.` A `--parent` that lives in a different space than `--space` is refused too.
-- **Only pages it published itself.** Every page the tool creates gets an invisible Confluence content property, `cpub-managed`, recording which source it came from. Pages carrying the marker from the same source update silently. Any other page (written by hand, published by an older version of this tool, or from a different source) needs a **hand-over** (below).
+- **Only inside the parent.** A page counts as "already published" only if it sits **below** `--parent` (at any depth). A page with the same title anywhere else in the space, the parent page itself, or a page that is archived or in the trash is refused: `"<title>" already exists outside <parent> … — not touching it. Use a distinct --prefix.` A `--parent` that lives in a different space than `--space` is refused too. With `--to`, no title search happens at all: exactly the page you named is the target.
+- **Only pages it published itself.** Every page the tool creates gets an invisible Confluence content property, `cpub-managed`, recording which source it came from (the prefixed page title for a folder, the note's file name for a single note). Pages carrying the marker from the same source update silently. Any other page (written by hand, published by an older version of this tool, or from a different source) needs a **hand-over** (below).
 - **A cap on the blast radius.** A run that would update more than 25 existing pages is refused with the count; re-run with `--max-updates N` if that is really what you want. New pages don't count (nothing is lost).
 - **It never deletes or moves anything**, and never renames a page.
 - Each page body is **validated as XML before it is sent**, so malformed content fails locally instead of producing broken pages.

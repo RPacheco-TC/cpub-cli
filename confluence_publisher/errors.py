@@ -40,6 +40,44 @@ class NotAFolder(PublisherError):
         self.path = path
 
 
+class NotAMarkdownFile(PublisherError):
+    """The note path is a file but not a ``.md`` file (or is neither file nor folder).
+
+    :param path: the path as given.
+    """
+    def __init__(self, path):
+        super().__init__(f"Not a Markdown note or a folder: {path}")
+        self.path = path
+
+
+class BadPageRef(PublisherError):
+    """A page argument (id or URL) that cannot be used; nothing was sent.
+
+    :param ref: the argument as given.
+    :param message: what is wrong, in one sentence.
+    :param fix: the one thing to do about it.
+    """
+    def __init__(self, ref, message, fix):
+        super().__init__(message)
+        self.ref, self.message, self.fix = ref, message, fix
+
+
+class FolderPageRef(BadPageRef):
+    """The URL points at a Confluence folder, which cannot hold published pages."""
+
+
+class ShortLinkPageRef(BadPageRef):
+    """A ``/wiki/x/...`` short link (resolving it needs a redirect; out of scope)."""
+
+
+class ForeignHostPageRef(BadPageRef):
+    """The URL is on another site than ``CONFLUENCE_BASE_URL``."""
+
+
+class UnrecognisedPageRef(BadPageRef):
+    """Neither a numeric id nor one of the accepted page URL forms."""
+
+
 class PlanRefused(PublisherError):
     """The plan failed an E0 check; nothing was written."""
     def __init__(self, refusals):

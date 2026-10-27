@@ -5,6 +5,7 @@ Split from :mod:`.cli` (which wires the run) so each module keeps one job.
 source, the token to mask) through its constructor; it never reads the
 environment.
 """
+import re
 import ssl
 import urllib.error
 
@@ -12,6 +13,8 @@ from .errors import CliError
 from .cli_output import PlanPrinter, _plural, _need
 
 TOKEN_URL = "https://id.atlassian.com/manage-profile/security/api-tokens"
+_SPACE_BY_ID = re.compile(r"/api/v2/spaces/[^/?#]+(?:[?#]|$)")   # GET /spaces/{id}, not ?keys=
+CMD = "python3.12 confluence_publish.py"
 
 
 # --- friendly errors (S3.1) -----------------------------------------------------------
@@ -44,8 +47,58 @@ class ErrorTranslator:
             "~/.config/confluence-publisher/.env, or export them.",
             "Searched, in order:\n" + "\n".join(f"- {s}" for s in searched))
 
+    # flag combinations (note vs folder)
+    @staticmethod
+    def no_such_path(path):
+        return CliError(f"No such file or folder: {path}.",
+                        'Pass a Markdown note (a .md file) or a folder of "NN - Title.md" docs.')
+
+    @staticmethod
+    def not_markdown(path):
+        return CliError(f"Not a Markdown note: {path}.",
+                        'Pass a .md file, or a folder of "NN - Title.md" docs.')
+
+    @staticmethod
+    def bad_page_ref(e):
+        """A page id/URL that cannot be used (folder, short link, other site, unknown)."""
+        return CliError(str(e), e.fix)
+
+    @staticmethod
+    def to_and_under():
+        return CliError("--to and --under can't be used together.",
+                        "Use --to PAGE to replace that page, or --under PAGE to create a "
+                        "child page of it.")
+
+    @staticmethod
+    def note_without_target(path):
+        return CliError("Say where this note goes: --to replaces a page, --under creates a "
+                        "child page.",
+                        f"{CMD} {path} --to <page URL or id>   or   "
+                        f"{CMD} {path} --under <page URL or id>")
+
+    @staticmethod
+    def folder_without_parent(path):
+        return CliError("Say which page to publish this folder under.",
+                        f"{CMD} {path} --parent <page URL or id>   (--under works too)")
+
+    @staticmethod
+    def to_with_folder():
+        return CliError("--to replaces one page, so it takes a single note, not a folder.",
+                        "Use --parent PAGE (or --under PAGE) to publish the folder as child "
+                        "pages.")
+
+    @staticmethod
+    def title_with_folder():
+        return CliError("--title names one page, so it takes a single note, not a folder.",
+                        "Drop --title: folder pages are titled from their file names.")
+
+    @staticmethod
+    def parent_and_under():
+        return CliError("--parent and --under name different pages.",
+                        "Give only one of them: they mean the same thing for a folder.")
+
     def not_a_folder(self):
-        return CliError(f"Not a folder: {self.args.docs_dir}.",
+        return CliError(f"Not a folder: {self.args.path}.",
                         'Pass the folder that holds the "NN - Title.md" docs.')
 
     @staticmethod
@@ -82,6 +135,12 @@ class ErrorTranslator:
         """
         if e.code == 404 and stage == "space":
             return self.no_space(self.http(e).detail)
+        if e.code == 404 and _SPACE_BY_ID.search(getattr(e, "url", None) or ""):
+            # the page was found, but its space (looked up by id) was not
+            return CliError(f"Confluence could not show the space of page {self.args.parent} "
+                            "(it may be restricted for your account).",
+                            "Ask a space admin for access to that space, or check the page URL.",
+                            self.http(e).detail)
         return self.http(e)
 
     def http(self, e):
@@ -91,14 +150,16 @@ class ErrorTranslator:
         if e.code == 401:
             return self.bad_token(raw)
         if e.code == 403:
-            return CliError(f"Your account can't edit this page/space ({a.space}).",
+            where = f" ({a.space})" if a.space else ""
+            return CliError(f"Your account can't edit this page/space{where}.",
                             "Ask a space admin for edit permission, or publish under a page "
                             "you can edit.",
                             raw)
         if e.code == 404:
             return CliError(f"Page {a.parent} was not found or is not visible to you.",
-                            f"Check --parent: it must be the id of a page (not a folder) in space "
-                            f"{a.space}.", raw)
+                            "Check the page URL or id: it must be a page (not a folder)"
+                            + (f" in space {a.space}." if a.space else " that you can open."),
+                            raw)
         if e.code == 409:
             return CliError("A page was edited in Confluence after this run was planned, so it "
                             "was not overwritten.",
@@ -107,7 +168,7 @@ class ErrorTranslator:
         if e.code == 400:
             return CliError("Confluence refused the request as invalid.",
                             f"Usually --parent {a.parent} is a folder (use a page) or a page "
-                            f"title already exists in space {a.space} (use a distinct --prefix).",
+                            "title already exists in the space (use a distinct --prefix).",
                             raw)
         return CliError(f"Confluence returned an unexpected error ({e.code}).",
                         "Try again; if it persists, check the detail below.", raw)
@@ -146,14 +207,21 @@ class ErrorTranslator:
         return CliError(
             f"{_need(n)} a one-time hand-over and this is not an interactive "
             "terminal — nothing was written.",
-            f"Run it in a terminal and type {n} when asked, or add --adopt to take them over.",
+            f"Run it in a terminal and type {n} when asked, or add --adopt to take "
+            f"{'it' if n == 1 else 'them'} over.",
             "\n".join(PlanPrinter.describe(it).strip() for it in items))
 
-    @staticmethod
-    def handover_declined(items):
+    def handover_declined(self, items):
+        """The typed count did not match; the alternative depends on the mode."""
+        n = len(items)
+        if getattr(self.args, "to", None):          # note --to: one named page
+            other = 'use --under PAGE --title "New title" to publish a new page instead.'
+        elif str(getattr(self.args, "path", "")).lower().endswith(".md"):   # note --under
+            other = "use a different --title to publish a new page instead."
+        else:
+            other = "use a distinct --prefix to publish new pages instead."
         return CliError("Hand-over not confirmed — nothing was written.",
-                        f"Run again and type {len(items)} to take the page(s) over, or use a "
-                        "distinct --prefix to publish new pages instead.")
+                        f"Run again and type {n} to take the page(s) over, or {other}")
 
     def partial(self, report):
         """AC-0.1.4: a write failed mid-run — say what was and wasn't written."""

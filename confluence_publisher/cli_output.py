@@ -27,6 +27,13 @@ def _need(n):
     return f"{_plural(n, 'page')} need" + ("s" if n == 1 else "")
 
 
+def _size(n):
+    """``"812 bytes"`` / ``"4.2 KB"``; ``"unknown size"`` when not known."""
+    if n is None:
+        return "unknown size"
+    return f"{n} bytes" if n < 1024 else f"{n / 1024:.1f} KB"
+
+
 def _when(iso):
     """Shorten a Confluence ISO timestamp to ``YYYY-MM-DD HH:MM UTC`` (best effort)."""
     try:
@@ -94,8 +101,10 @@ class PlanPrinter:
                     f"{'it' if n == 1 else 'them'} from this source):")
             self._print("\n" + head, *(self.describe(it) for it in handover))
 
-    def handover_hint(self):
-        self._print("\nThe real run will ask you to type the page count to hand them over "
+    def handover_hint(self, n=2):
+        """Dry-run note that the real run will ask; ``n`` picks "it" or "them"."""
+        them = "it" if n == 1 else "them"
+        self._print(f"\nThe real run will ask you to type the page count to hand {them} over "
                     "(or pass --adopt when not in a terminal).")
 
     def marker_warnings(self, report):
@@ -103,12 +112,36 @@ class PlanPrinter:
             self._print(f"\nWarning: {it.title} was written but could not be marked as managed "
                         f"({exc}); the next run will ask to hand it over once.")
 
-    def footer(self, count, done, args, parent_link):
-        """``N pages <done> — space …`` then the clickable parent link."""
+    def footer(self, count, done, args, parent_link, space=None):
+        """``N pages <done> — space …`` then the clickable parent link (folder mode).
+
+        :param space: the space to show when ``--space`` was omitted (taken from
+            the parent page); the v1.1 line is unchanged when it was given.
+        """
         prefix_note = f", prefix {args.prefix!r}" if args.prefix else ""
-        self._print(f"\n{count} pages {done} — space {args.space}, "
+        self._print(f"\n{count} pages {done} — space {args.space or space}, "
                     f"parent {args.parent}{prefix_note}",
                     f"Parent page: {parent_link}")
+
+    def preview(self, item, space):
+        """S2.3: what a single-note run is about to do to its page."""
+        if item.action == "CREATE":
+            self._print(f"\nNew page: {item.title}  (space {space}, "
+                        f"{_size(item.new_size)})")
+            return
+        bits = [f"version {item.version}"] if item.version is not None else []
+        if item.last_edited:
+            bits.append(f"last edited {_when(item.last_edited)}")
+        self._print("\nReplace preview:",
+                    f"  Page:     {item.title}  (space {space})",
+                    f"  Current:  {', '.join(bits) or 'unknown version'}",
+                    f"  Content:  {_size(item.old_size)} -> {_size(item.new_size)}")
+
+    def note_footer(self, done, space, page_link, history=None):
+        """``1 page <done> — space …``, the page link and (after a write) its history."""
+        self._print(f"\n1 page {done} — space {space}", f"Page: {page_link}")
+        if history:
+            self._print(f"History: {history}  (earlier versions can be restored here)")
 
 
 # --- hand-over prompt (AC-0.3.3) ----------------------------------------------------
@@ -137,8 +170,8 @@ class HandoverPrompt:
     def confirm(self, items):
         """:returns: ``True`` only when the user typed exactly ``len(items)``."""
         n = len(items)
-        print(f"\nThese {n} page(s) exist under the parent but were not published by this "
-              "tool from this source:", file=self.out)
+        head = "This page was" if n == 1 else f"These {n} pages were"
+        print(f"\n{head} not published by this tool from this source:", file=self.out)
         for it in items:
             print(PlanPrinter.describe(it), file=self.out)
         try:

@@ -26,7 +26,7 @@ def _load():
 
 pkg = _load()
 from confluence_publisher import (api, config, docset, errors, executor,  # noqa: E402
-                                  markdown_html, plan, storage)
+                                  markdown_html, pageref, plan, storage)
 
 
 def __getattr__(name):

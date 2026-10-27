@@ -159,7 +159,7 @@ my-repo-docs/
 
 ## Stage 2 — Publish to Confluence
 
-Once you have reviewed the generated docs, you can publish them to Confluence Cloud as a page tree. This stage is separate from generation: you can publish, edit the Markdown later, and re-publish, as often as you like.
+Once you have reviewed the generated docs, you can publish them to Confluence Cloud as a page tree. This stage is separate from generation: you can publish, edit the Markdown later, and re-publish, as often as you like. (To publish **one note** instead of a whole folder, see [Publish a single note](#publish-a-single-note) below.)
 
 ### What you need to publish
 - **Python 3.12+** (no extra packages to install). On macOS the built-in `python3` is 3.9: `brew install python@3.12` and run `python3.12`.
@@ -179,33 +179,25 @@ The base URL for Confluence Cloud ends in `/wiki`, for example `https://your-com
 > [!tip] One credentials file for every repo
 > Put the same three lines in `~/.config/confluence-publisher/.env` instead, and every repo and folder can publish without its own `.env`. Each variable is looked up in this order, first hit wins: a real environment variable, then `--env-file PATH`, then `./.env` in the folder you run from, then `~/.config/confluence-publisher/.env`. If something is missing, the error lists every place it looked.
 
-### Step 2 — Choose the space and create a parent PAGE
+### Step 2 — Create a parent PAGE and copy its URL
 
 > [!important] You must publish under a PAGE, not a folder
-> The tool places all the docs as **children of one Confluence page** that you choose. You have to **create (or pick) a real page** to act as the parent and pass its page id with `--parent`. A Confluence **folder cannot be the target** — the API does not reliably support publishing under folders. You may still keep your parent page *inside* a folder for tidiness; the tool addresses the page, and the folder is just a wrapper around it.
+> The tool places all the docs as **children of one Confluence page** that you choose. You have to **create (or pick) a real page** to act as the parent and pass its URL (or id) with `--parent`. A Confluence **folder cannot be the target** — the API does not reliably support publishing under folders. You may still keep your parent page *inside* a folder for tidiness; the tool addresses the page, and the folder is just a wrapper around it.
 
-You give the publisher two things: a **space key** and that **parent page id**. Everything is published as children of that one page, and nothing else in the space is ever touched.
+You give the publisher one thing: that **parent page**. Everything is published as children of that one page, and nothing else in the space is ever touched.
 
-**Find the space key.** Open the target space in Confluence and look at the URL:
-
-```
-https://your-company.atlassian.net/wiki/spaces/KEY/...
-                                            ^^^
-```
-
-The `KEY` is the part right after `/spaces/`. A normal team/shared space has a short key like `ENG`, `DOCS`, or `PLATFORM`. (A personal space key starts with `~`.)
-
-**Choose or create the parent page.** Decide where in that space the docs should live, and create one page to act as the container — for example `Service X Documentation`. You need permission to add pages in that space, so if it is a shared space, make sure you can create pages there (and it is polite to let the space owner know). Open the page and copy its **page id** from the URL:
+**Choose or create the parent page.** Decide where the docs should live, and create one page to act as the container — for example `Service X Documentation`. You need permission to add pages in that space, so if it is a shared space, make sure you can create pages there (and it is polite to let the space owner know). Then open the page and **copy its URL from the browser's address bar**:
 
 ```
 https://your-company.atlassian.net/wiki/spaces/DOCS/pages/123456789/Service+X+Documentation
-                                                          ^^^^^^^^^
 ```
 
-That number is the `--parent` value.
+Paste that whole URL as the `--parent` value (the number `123456789` on its own works too, as do the `…/pages/edit-v2/<id>` and `…/viewpage.action?pageId=<id>` forms). The tool works out the space from the page, so you don't need `--space`. If you pass `--space` anyway (the part after `/spaces/`, e.g. `DOCS`, or `~yourname` for a personal space), it checks that the page really is in that space and stops if not.
+
+The tool refuses a **folder** URL (`…/folder/…`), a short link (`…/wiki/x/…`), and a URL from a different Confluence site than the one in your credentials, before sending anything.
 
 > [!tip] Test in your personal space first
-> Before publishing to a shared space, do a trial run in your **personal space** (its key starts with `~`) or a throwaway space — it is private and risk-free. When it looks right, repoint at the real space and parent by simply changing `--space` and `--parent`.
+> Before publishing to a shared space, do a trial run in your **personal space** (its key starts with `~`) or a throwaway space — it is private and risk-free. When it looks right, repoint at the real parent by simply changing `--parent`.
 
 ### Step 3 — Choose a unique prefix (per repo)
 
@@ -229,13 +221,13 @@ Notes:
 ### Step 4 — Dry-run, then publish
 ```bash
 # Preview the plan — writes nothing:
-python3.12 confluence_publish.py "/path/to/my-repo-docs" --space DOCS --parent 123456789 --prefix langflow --dry-run
+python3.12 confluence_publish.py "/path/to/my-repo-docs" --parent "<parent page URL>" --prefix langflow --dry-run
 
 # Publish for real:
-python3.12 confluence_publish.py "/path/to/my-repo-docs" --space DOCS --parent 123456789 --prefix langflow
+python3.12 confluence_publish.py "/path/to/my-repo-docs" --parent "<parent page URL>" --prefix langflow
 ```
 
-Use your team space key (e.g. `DOCS`) for real publishing, or `--space "~yourname"` to trial it in your personal space first. You will see a per-page `CREATE` / `UPDATE` plan (showing the actual prefixed titles), how many diagrams each page carries, and who owns the pages it would update. After a real publish it ends with a link to the parent page. Re-running updates the same pages in place (matched by title, below the parent only), so it is safe to run again after editing the Markdown. The dry-run runs exactly the same checks as the real publish.
+Quote the URL so your shell doesn't trip over `?` or `&` in it. You will see a per-page `CREATE` / `UPDATE` plan (showing the actual prefixed titles), how many diagrams each page carries, and who owns the pages it would update. After a real publish it ends with a link to the parent page. Re-running updates the same pages in place (matched by title, below the parent only), so it is safe to run again after editing the Markdown. The dry-run runs exactly the same checks as the real publish.
 
 > [!note] Collisions are caught before anything is written
 > If two source files in **your own folder** resolve to the same title, the publisher stops *before* contacting Confluence and tells you which file to rename. If a title already exists **elsewhere in the space** (outside your parent page), the whole run is refused with nothing written and every clashing page listed — `--prefix` is the way to avoid it.
@@ -261,6 +253,49 @@ Type the number to go ahead; anything else writes nothing. The pages are marked 
 
 ---
 
+## Publish a single note
+
+You can also publish **one Obsidian note** to Confluence, without a doc set. Point the command at the `.md` file and say where it goes:
+
+| You want to… | Command |
+| --- | --- |
+| Replace the content of an existing page | `python3.12 confluence_publish.py "My Note.md" --to "<page URL>"` |
+| Create the note as a new child page | `python3.12 confluence_publish.py "My Note.md" --under "<parent page URL>"` |
+
+Add `--dry-run` to see what would happen without writing anything. The credentials are the same as in Step 1, and `--space` is not needed: it is taken from the page.
+
+### `--to`: replace a page
+
+`--to` replaces exactly the page you name; no title search is involved. The page keeps its **title**, its place in the tree and its space (pass `--title "New title"` to rename it). Before writing, the tool shows a **replace preview**:
+
+- the page title and space,
+- its current version and when it was last edited,
+- the size of the old content and of the new content.
+
+`--dry-run` stops after the preview. The new version's comment reads `Published from Obsidian: My Note.md`. After the write you get two links: the page itself and its **page history**, where the previous version is one click away if you need it back.
+
+### `--under`: create a child page
+
+`--under` creates a new page below the one you name. Its title is `--title` if you give one, else the `title:` in the note's frontmatter, else the file name (`My Note`). Re-running the same command finds that child and updates it. If a page with the same title already exists **elsewhere** in the space, the run is refused (pick another `--title`, or use `--to` on that page if it is the one you mean).
+
+### The safety prompt
+
+The first time you publish a note to a page this tool did not create from that note — a page written by hand, or one published from a different note — the tool lists it and asks you to confirm:
+
+```
+Take over and replace 1 page(s) you did not publish? Type the number 1 to confirm:
+```
+
+Type the number to go ahead; anything else writes nothing. From then on the page is marked as published from that note, so republishing it never asks again. In a script or an editor hotkey there is no prompt: the run refuses unless you add `--adopt`. The space's **home page** can never be replaced with `--to`.
+
+### Good to know
+
+- **No title prefix** is added in note mode unless you pass `--prefix`.
+- **Diagrams** are rendered into your user cache folder (`~/.cache/confluence-publisher/img`), not next to the note, so nothing new appears in your vault.
+- **Links to other notes** (`[[Other note]]`) become page links by title, as in a doc set; a note that was never published shows as a link to a missing page.
+
+---
+
 ## In one sentence
 
-**Generate:** install Claude Code and Obsidian, copy `template.yaml` next to your repo, paste the generation prompt into Claude Code with your two paths filled in, and review the result in Obsidian. **Publish:** set your three Confluence credentials in `.env` (or `~/.config/confluence-publisher/.env`), then run `python3.12 confluence_publish.py <docs-folder> --space KEY --parent PAGE_ID --prefix <repo-name>` (try `--dry-run` first; the `--prefix` keeps each repo's titles unique in a shared space).
+**Generate:** install Claude Code and Obsidian, copy `template.yaml` next to your repo, paste the generation prompt into Claude Code with your two paths filled in, and review the result in Obsidian. **Publish:** set your three Confluence credentials in `.env` (or `~/.config/confluence-publisher/.env`), then run `python3.12 confluence_publish.py <docs-folder> --parent <page URL> --prefix <repo-name>` for a doc set, or `python3.12 confluence_publish.py <note.md> --to <page URL>` for one note (try `--dry-run` first; the `--prefix` keeps each repo's titles unique in a shared space).

@@ -1,8 +1,9 @@
 """Credentials (S1.1): env vars > --env-file > ./.env > user config file.
 
-:class:`CredentialLoader` is the **only** place in the package that reads
-``os.environ``; it returns an immutable :class:`Credentials` that is passed to
-:class:`~.api.ConfluenceClient`. It never executes anything and never writes.
+:class:`CredentialLoader` and :class:`AppDirs` are the **only** places in the
+package that read ``os.environ``. The loader returns an immutable
+:class:`Credentials` that is passed to :class:`~.api.ConfluenceClient`.
+Nothing here executes anything or writes.
 """
 import os
 import re
@@ -57,6 +58,39 @@ class Credentials:
     def masked(self) -> str:
         """A one-line summary that is safe to print."""
         return f"{self.email} @ {self.base_url} (token ****, from {self.token_source})"
+
+
+class AppDirs:
+    """The per-user folders, from the XDG variables (the only place they are read).
+
+    :param environ: the environment mapping (``os.environ`` when ``None``).
+    """
+
+    APP = "confluence-publisher"
+
+    def __init__(self, environ=None):
+        self.environ = os.environ if environ is None else environ
+
+    def _base(self, var, default):
+        xdg = self.environ.get(var)
+        if xdg:
+            return pathlib.Path(xdg)
+        return pathlib.Path(self.environ.get("HOME") or os.path.expanduser("~")) / default
+
+    @property
+    def config_dir(self) -> pathlib.Path:
+        """``$XDG_CONFIG_HOME/confluence-publisher`` (default ``~/.config/…``)."""
+        return self._base("XDG_CONFIG_HOME", ".config") / self.APP
+
+    @property
+    def cache_dir(self) -> pathlib.Path:
+        """``$XDG_CACHE_HOME/confluence-publisher`` (default ``~/.cache/…``)."""
+        return self._base("XDG_CACHE_HOME", ".cache") / self.APP
+
+    @property
+    def note_img_dir(self) -> pathlib.Path:
+        """Where note mode renders Mermaid PNGs, outside the vault (S2.6)."""
+        return self.cache_dir / "img"
 
 
 class CredentialLoader:
@@ -126,17 +160,13 @@ class CredentialLoader:
         :param env_file: the ``--env-file`` path, or ``None``.
         :rtype: list[pathlib.Path]
         """
-        environ = self.environ
         paths = []
         if env_file:
             paths.append(pathlib.Path(env_file).expanduser())
         paths.append(pathlib.Path(self.cwd if self.cwd is not None else os.getcwd()) / ".env")
         config_dir = self.config_dir
         if config_dir is None:
-            xdg = environ.get("XDG_CONFIG_HOME")
-            base = pathlib.Path(xdg) if xdg else pathlib.Path(
-                environ.get("HOME") or os.path.expanduser("~")) / ".config"
-            config_dir = base / "confluence-publisher"
+            config_dir = AppDirs(self.environ).config_dir
         paths.append(pathlib.Path(config_dir) / ".env")
         return paths
 

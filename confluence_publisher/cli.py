@@ -56,32 +56,40 @@ constructor, so tests pass fakes instead of patching module attributes.
 import sys
 import pathlib
 import argparse
+import dataclasses
 import urllib.error
 
 from .errors import (CliError, MissingCredentials, SpaceNotFound, NotAFolder, PlanRefused,
-                     HandoverRequired, HandoverDeclined, PlanExecutionError)
-from .config import CredentialLoader
+                     HandoverRequired, HandoverDeclined, PlanExecutionError, BadPageRef,
+                     NotAMarkdownFile)
+from .config import CredentialLoader, AppDirs
 from .api import ConfluenceClient, HttpTransport
 from .storage import StorageConverter
-from .docset import DocSet
+from .docset import DocSet, SingleNote
+from .pageref import PageRef
 from .plan import Planner, DEFAULT_MAX_UPDATES
 from .executor import PlanExecutor
 from .cli_output import PlanPrinter, HandoverPrompt
-from .cli_errors import ErrorTranslator
+from .cli_errors import ErrorTranslator, CMD
 
 
-CMD = "python3.12 confluence_publish.py"
 
 _HELP_INTRO = f"""\
-Publish a folder of Markdown docs to Confluence Cloud under one parent page.
+Publish Markdown to Confluence Cloud: one note to one page, or a folder of
+docs as a page tree. A page can be given as its id or its URL.
 
-example:
-  {CMD} docs/ --space ENG --parent 123456789 --prefix myrepo --dry-run
-  {CMD} docs/ --space ENG --parent 123456789 --prefix myrepo
+examples:
+  {CMD} note.md --to https://acme.atlassian.net/wiki/spaces/ENG/pages/123456789 --dry-run
+  {CMD} note.md --under 123456789
+  {CMD} docs/ --parent 123456789 --prefix myrepo --dry-run
+
+  note.md --to PAGE     replace that page's content (its title is kept)
+  note.md --under PAGE  create a child page of PAGE (re-running updates it)
+  docs/ --parent PAGE   publish the folder as child pages of PAGE
 
 Safety: every run is planned and checked before anything is written. It only
-updates pages below --parent that it published itself; any other page needs a
-one-time hand-over (type the page count when asked, or --adopt in scripts).
+updates pages it published itself from the same source; any other page needs
+a one-time hand-over (type the page count when asked, or --adopt in scripts).
 Nothing is ever deleted or moved.
 """
 
@@ -110,6 +118,61 @@ def _int_at_least(minimum, message):
 
 # --- argument parsing -------------------------------------------------------------
 
+@dataclasses.dataclass(frozen=True)
+class RunMode:
+    """What the command line asks for, once the flag combination is validated.
+
+    :param kind: ``"note"`` (one ``.md`` file) or ``"set"`` (a folder).
+    :param path: the note or folder.
+    :param page: the page reference as typed (id or URL): the ``--to`` target,
+        or the parent for ``--under`` / ``--parent``.
+    :param replace: ``True`` for ``--to`` (replace that page).
+    """
+    kind: str
+    path: str
+    page: str
+    replace: bool = False
+
+
+class ModeResolver:
+    """Chooses note or set mode from the path and checks the flags that go with it.
+
+    :param is_file: ``path -> bool`` (default :meth:`pathlib.Path.is_file`).
+    :param is_dir: ``path -> bool`` (default :meth:`pathlib.Path.is_dir`).
+    """
+
+    def __init__(self, is_file=None, is_dir=None):
+        self.is_file = is_file or (lambda p: pathlib.Path(p).is_file())
+        self.is_dir = is_dir or (lambda p: pathlib.Path(p).is_dir())
+
+    def resolve(self, args):
+        """:rtype: RunMode
+        :raises CliError: for a missing path, a non-Markdown file, or flags
+            that do not fit the mode."""
+        path, err = args.path, ErrorTranslator
+        if args.parent and args.under and args.parent != args.under:
+            raise err.parent_and_under()
+        if self.is_dir(path):
+            if args.to:
+                raise err.to_with_folder()
+            if args.title:
+                raise err.title_with_folder()
+            page = args.parent or args.under
+            if not page:
+                raise err.folder_without_parent(path)
+            return RunMode("set", path, page)
+        if not self.is_file(path):
+            raise err.no_such_path(path)
+        if not path.lower().endswith(".md"):
+            raise err.not_markdown(path)
+        under = args.under or args.parent
+        if args.to and under:
+            raise err.to_and_under()
+        if not (args.to or under):
+            raise err.note_without_target(path)
+        return RunMode("note", path, args.to or under, replace=bool(args.to))
+
+
 class ArgumentParserFactory:
     """Builds the ``argparse`` parser: every flag, its help text and validation."""
 
@@ -118,13 +181,25 @@ class ArgumentParserFactory:
         ap = argparse.ArgumentParser(
             description=_HELP_INTRO, epilog=_HELP_CREDS,
             formatter_class=argparse.RawDescriptionHelpFormatter)
-        ap.add_argument("docs_dir",
-                        help='folder of "NN - Title.md" docs (optional "In Situ/" subfolder)')
-        ap.add_argument("--space", required=True,
-                        help="Confluence space KEY (e.g. ~yourname or ENG)")
-        ap.add_argument("--parent", required=True, help="ID of the parent page to publish under")
+        ap.add_argument("path", metavar="PATH",
+                        help='a Markdown note (.md file), or a folder of "NN - Title.md" docs '
+                             '(optional "In Situ/" subfolder)')
+        ap.add_argument("--to", default=None, metavar="PAGE",
+                        help="note only: replace the content of this page (id or URL)")
+        ap.add_argument("--under", default=None, metavar="PAGE",
+                        help="publish under this page (id or URL): a note becomes a child "
+                             "page; for a folder it is the same as --parent")
+        ap.add_argument("--parent", default=None, metavar="PAGE",
+                        help="folder: the page (id or URL) to publish the docs under")
+        ap.add_argument("--title", default=None,
+                        help="note only: the page title (default: --to keeps the page's "
+                             "title; --under uses the frontmatter title: or the file name)")
+        ap.add_argument("--space", default=None,
+                        help="Confluence space KEY (e.g. ~yourname or ENG); optional, taken "
+                             "from the page when omitted, and checked against it when given")
         ap.add_argument("--img-dir", default=None,
-                        help="where to render Mermaid PNGs (default: <docs_dir>/.img)")
+                        help="where to render Mermaid PNGs (default: <folder>/.img for a "
+                             "folder, the user cache folder for a note)")
         ap.add_argument("--prefix", default="",
                         help="unique identifier prepended to every page title "
                              '(e.g. "langflow" -> "langflow - 01 - Overview"); use a '
@@ -165,11 +240,19 @@ class PublishCommand:
     :param planner_factory: ``(client, args) -> Planner``.
     :param executor_factory: ``client -> PlanExecutor``.
     :param prompt: a :class:`HandoverPrompt`.
+    :param mode_resolver: a :class:`ModeResolver` (note vs folder, flag checks).
+    :param note_loader: ``(path, title) -> SingleNote``; raises
+        :class:`~.errors.NotAMarkdownFile`.
+    :param app_dirs: an :class:`~.config.AppDirs` (the note-mode image cache folder).
     """
 
     def __init__(self, args, *, out, credential_loader, client_factory, docset_loader,
-                 planner_factory, executor_factory, prompt):
+                 planner_factory, executor_factory, prompt, mode_resolver=None,
+                 note_loader=None, app_dirs=None):
         self.args, self.out = args, out
+        self.mode_resolver = mode_resolver or ModeResolver()
+        self.note_loader = note_loader or (lambda path, title: SingleNote.from_file(path, title))
+        self.app_dirs = app_dirs or AppDirs()
         self.credential_loader = credential_loader
         self.client_factory = client_factory
         self.docset_loader = docset_loader
@@ -200,7 +283,7 @@ class PublishCommand:
 
     @staticmethod
     def _real_planner(client, args):
-        img_dir = args.img_dir or str(pathlib.Path(args.docs_dir) / ".img")
+        img_dir = args.img_dir or str(pathlib.Path(args.path) / ".img")
         return Planner(client, StorageConverter(args.prefix, img_dir, args.img_width))
 
     def run(self):
@@ -232,7 +315,7 @@ class PublishCommand:
 
     def _docset(self):
         try:
-            docs = self.docset_loader(self.args.docs_dir)
+            docs = self.docset_loader(self.args.path)
         except NotAFolder:
             raise self.errors.not_a_folder() from None
         dupes = docs.duplicate_titles()
@@ -240,46 +323,91 @@ class PublishCommand:
             raise ErrorTranslator.duplicate_titles(dupes)
         return docs
 
-    def _plan(self, client, docs):
+    def _note(self, mode):
+        try:
+            return self.note_loader(mode.path, self.args.title)
+        except NotAMarkdownFile:
+            raise ErrorTranslator.not_markdown(mode.path) from None
+
+    def _page_id(self, text, credentials):
+        """A page id from an id or a page URL (pure; no network)."""
+        try:
+            return PageRef.parse(text, credentials.base_url).page_id
+        except BadPageRef as e:
+            raise ErrorTranslator.bad_page_ref(e) from None
+
+    def _plan(self, client, source, mode):
         a, stage = self.args, "space"
         try:
             me = client.whoami()
             if not me.get("authenticated"):
                 raise self.errors.unauthenticated(me)
-            try:
-                space_id = client.resolve_space_id(a.space)
-            except SpaceNotFound:
-                raise self.errors.no_space() from None
+            space_id = None
+            if a.space:
+                try:
+                    space_id = client.resolve_space_id(a.space)
+                except SpaceNotFound:
+                    raise self.errors.no_space() from None
             stage = "parent"
-            return self.planner_factory(client, a).build(docs, space_id, a.parent)
+            planner = self.planner_factory(client, a)
+            if mode.replace:
+                return planner.build_replace(source, a.parent, space_id)
+            return planner.build(source, space_id, a.parent)
         except urllib.error.HTTPError as e:
             raise self.errors.read(e, stage) from None
 
-    def _parent_link(self, plan, credentials):
-        webui = (plan.parent_info or {}).get("webui")
+    def _page_link(self, webui, page_id, credentials):
         if webui:
             return webui if webui.startswith("http") else credentials.base_url + webui
-        return f"{credentials.base_url}/pages/viewpage.action?pageId={self.args.parent}"
+        return f"{credentials.base_url}/pages/viewpage.action?pageId={page_id}"
 
     def _run(self):
-        a, p = self.args, self.printer
+        mode = self.mode_resolver.resolve(self.args)       # local checks, before any I/O
         credentials = self._credentials()
-        docs = self._docset()
+        page_id = self._page_id(mode.page, credentials)
+        # --to/--under/--parent all resolve to one page id; a note's diagrams go to the cache
+        img_dir = self.args.img_dir
+        if mode.kind == "note" and not img_dir:
+            img_dir = str(self.app_dirs.note_img_dir)
+        self.args = argparse.Namespace(**{**vars(self.args), "parent": page_id,
+                                          "img_dir": img_dir})
+        self.errors = ErrorTranslator(self.args, credentials)
+        source = self._docset() if mode.kind == "set" else self._note(mode)
         client = self.client_factory(credentials)
-        plan = self._plan(client, docs)
+        plan = self._plan(client, source, mode)
+        self._show_and_write(plan, mode, client, credentials)
+
+    def _space_label(self, plan):
+        info = getattr(plan, "space_info", None) or {}
+        return self.args.space or info.get("key") or f"id {plan.space_id}"
+
+    def _show_and_write(self, plan, mode, client, credentials):
+        a, p = self.args, self.printer
         refusals = plan.refusals(a.max_updates)
-        link = self._parent_link(plan, credentials)
+        note = mode.kind == "note"
+        parent_link = self._page_link((plan.parent_info or {}).get("webui"), a.parent, credentials)
 
         if a.dry_run or refusals:
             p.table(plan.items)
+            if note and not refusals:                 # never preview what will be refused
+                p.preview(plan.items[0], self._space_label(plan))
             p.ownership(plan, refusals)
             if refusals:
                 raise ErrorTranslator.refused(refusals)
             if plan.handover_items():
-                p.handover_hint()
-            p.footer(len(plan.items), "DRY-RUN (nothing written)", a, link)
+                p.handover_hint(len(plan.handover_items()))
+            if note:
+                it = plan.items[0]
+                link = (self._page_link(it.webui, it.page_id, credentials) if it.page_id
+                        else parent_link)
+                p.note_footer("DRY-RUN (nothing written)", self._space_label(plan), link)
+            else:
+                p.footer(len(plan.items), "DRY-RUN (nothing written)", a, parent_link,
+                     self._space_label(plan))
             return
 
+        if note:
+            p.preview(plan.items[0], self._space_label(plan))
         confirm = None
         if not a.adopt and self.prompt.is_interactive():
             confirm = self.prompt.confirm
@@ -291,7 +419,7 @@ class PublishCommand:
         except HandoverRequired as e:
             raise ErrorTranslator.handover_required(e.items) from None
         except HandoverDeclined as e:
-            raise ErrorTranslator.handover_declined(e.items) from None
+            raise self.errors.handover_declined(e.items) from None
         except PlanExecutionError as e:
             raise self.errors.partial(e.report) from None
 
@@ -299,7 +427,15 @@ class PublishCommand:
         if a.adopt and plan.handover_items():
             p.ownership(plan, adopted=True)
         p.marker_warnings(report)
-        p.footer(len(plan.items), "published", a, link)
+        if note:
+            first = plan.items[0]
+            it, pid = report.written[0] if report.written else (first, first.page_id)
+            p.note_footer("published", self._space_label(plan),
+                          self._page_link(None, pid, credentials),   # by id: title may change
+                          history=f"{credentials.base_url}/pages/viewpreviousversions.action"
+                                  f"?pageId={pid}")
+        else:
+            p.footer(len(plan.items), "published", a, parent_link, self._space_label(plan))
 
 
 # --- entry points ------------------------------------------------------------------------
