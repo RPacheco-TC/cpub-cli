@@ -90,7 +90,7 @@ once the attachments existed produced `ri:version-at-save="1"` and the editor
 loaded both images. It hit every CREATE with diagrams, and every UPDATE whose
 diagram changed (new content hash → new filename).
 
-**Fix:** `publish_page` now uploads missing attachments *before* saving the body
+**Fix:** the publisher (now `_write_item`, called only from `execute_plan`) uploads missing attachments *before* saving the body
 on UPDATE, and on CREATE (the page must exist to take attachments) saves the body
 a second time after uploading. Covered by `tests/test_publish_order.py`.
 **Existing broken pages:** re-run the publish once; the UPDATE re-saves the body
@@ -202,3 +202,68 @@ markup ends up inside the code block's `CDATA`, which cannot hold tags.
   quote blocks (keeping one shared rule), and add regression tests for
   callouts, plain blockquotes and `[[TOC]]`.
 
+
+---
+
+## First republish of a v1.1 doc set asks for a hand-over
+
+### Symptom
+
+After upgrading, republishing a doc set that v1.1 published lists every
+existing page as "not published by this tool" and asks:
+
+```
+Take over and replace 18 page(s) you did not publish? Type the number 18 to confirm:
+```
+
+In a non-interactive run (script, pipe, editor hotkey) it refuses instead:
+"… need a one-time hand-over and this is not an interactive terminal —
+nothing was written." A set with more than 25 existing pages is also refused
+by the blast-radius cap (`--max-updates`, default 25).
+
+### Root cause
+
+Intended behaviour, not a bug. The publisher now overwrites only pages that
+carry its `cpub-managed` content property for the same source; v1.1 never
+wrote that property, so its pages look exactly like hand-written ones. There
+is deliberately no automatic adoption: a page that merely has a matching
+title could be someone else's.
+
+### Fix
+
+Run the publish once in a terminal and type the page count (add
+`--max-updates N` if the set has more than 25 pages), or pass `--adopt` in a
+script. Each page gets the marker as it is written, so every later run is
+silent, as before. The marker is an accident guard, not access control:
+anyone with edit rights can remove it, and that page then needs one hand-over
+again.
+
+### TODO
+
+- [ ] None planned — this is a one-time step per doc set.
+
+---
+
+## A page written without its ownership marker needs a hand-over next time
+
+### Symptom
+
+A run finishes but prints `Warning: <title> was written but could not be
+marked as managed …`. The next run asks to hand that page over again.
+
+### Root cause
+
+The v2 API cannot attach a content property in the same call that creates or
+updates a page, so the `cpub-managed` marker is a second request. If that
+request fails (network drop, a permission on content properties), the page
+body is already written. The run continues rather than aborting, and reports
+the page.
+
+### Fix
+
+Run the same command again and confirm the hand-over for that page; the marker
+is written then.
+
+### TODO
+
+- [ ] Retry the marker write once before reporting it.

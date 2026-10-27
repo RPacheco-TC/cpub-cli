@@ -59,10 +59,19 @@ Review and edit the Markdown before publishing. It is the source of truth.
 
 ```bash
 cp .env.example .env      # then edit .env with your base URL, email, and token
-set -a; . ./.env; set +a  # load them into your shell (never commit .env)
+chmod 600 .env            # only you can read it (never commit .env)
 ```
 
-The base URL for Confluence Cloud ends in `/wiki`, for example `https://your-company.atlassian.net/wiki`.
+That's it: the publisher finds the credentials itself. No `set -a; . ./.env; set +a` is needed any more (it still works). The base URL for Confluence Cloud ends in `/wiki`, for example `https://your-company.atlassian.net/wiki`.
+
+Each of the three variables (`CONFLUENCE_BASE_URL`, `CONFLUENCE_EMAIL`, `CONFLUENCE_API_TOKEN`) is looked up in this order, and the first place that has it wins:
+
+1. a real environment variable (`export …`, or the old `set -a` workflow);
+2. the file given with `--env-file PATH` (an error if that file does not exist);
+3. `./.env` in the folder you run the command from;
+4. `~/.config/confluence-publisher/.env` (or `$XDG_CONFIG_HOME/confluence-publisher/.env`) — one file for every repo.
+
+The files use plain `KEY=VALUE` lines as in `.env.example` (`export KEY=VALUE`, `#` comments and quoted values are fine; nothing is executed). If the file that holds the token can be read by other users, the tool prints a one-line warning suggesting `chmod 600 <file>` and carries on. If a credential is still missing, the error names it and lists every place it looked.
 
 ### 2. Choose the space and parent page
 
@@ -75,7 +84,7 @@ Tip: trial it in your **personal space** (`~yourname`) first, then repoint at th
 
 ### 3. Pick a unique prefix (when sharing a space)
 
-**Confluence page titles must be unique within a space** — you cannot have two pages with the same title in one space. If you publish more than one repo's docs into the same (shared) space, generic titles like `01 - Welcome and Quick Start` or `In Situ` collide and the second publish fails with `HTTP 400`.
+**Confluence page titles must be unique within a space** — you cannot have two pages with the same title in one space. If you publish more than one repo's docs into the same (shared) space, generic titles like `01 - Welcome and Quick Start` or `In Situ` collide: the second publish is refused before anything is written ("already exists outside <parent> — not touching it"), because the same-titled page belongs to the other repo's tree.
 
 Use `--prefix <id>` (typically the repo name) to namespace every page title. It is applied **at publish time only** — your Markdown stays clean — and re-publishing with the same prefix updates the same pages, so it remains idempotent.
 
@@ -91,13 +100,15 @@ Your Obsidian `[[wikilinks]]` keep working both ways: the files keep their origi
 
 ```bash
 # See exactly what would happen — writes nothing:
-python3 confluence_publish.py my-repo-docs --space DOCS --parent 123456789 --prefix langflow --dry-run
+python3.12 confluence_publish.py my-repo-docs --space DOCS --parent 123456789 --prefix langflow --dry-run
 
 # Publish for real:
-python3 confluence_publish.py my-repo-docs --space DOCS --parent 123456789 --prefix langflow
+python3.12 confluence_publish.py my-repo-docs --space DOCS --parent 123456789 --prefix langflow
 ```
 
-The tool prints a per-page plan (`CREATE` / `UPDATE`, with the actual prefixed titles) and how many diagrams each page carries. Re-running updates the same pages in place (matched by title), so it is safe to run repeatedly.
+The tool prints a per-page plan (`CREATE` / `UPDATE`, with the actual prefixed titles) and how many diagrams each page carries, then who owns each page (see [Safety](#safety)) and, after a real publish, a link to the parent page. Re-running updates the same pages in place (matched by title, inside the parent only), so it is safe to run repeatedly. The dry-run runs the same checks as the real run: if the dry-run passes, the real run will not be refused.
+
+Optional: `--max-updates N` raises the cap on how many existing pages one run may update (default `25`, see [Safety](#safety)).
 
 Optional: `--img-width <px>` sets a display width on every Mermaid diagram (e.g. `--img-width 700`), so diagrams rarely need resizing in the Confluence editor (see [Troubleshooting](#troubleshooting)). Without it, diagrams keep their natural size and the output is unchanged.
 
@@ -113,21 +124,46 @@ Optional: `--img-width <px>` sets a display width on every Mermaid diagram (e.g.
 
 ## Safety
 
-The publisher is non-destructive by construction:
+The publisher may only overwrite a page it can prove it is allowed to. Every run follows these rules:
 
-- It only ever **creates or updates pages under the parent page id you pass**. It does not scan, edit, or touch anything elsewhere in the space.
-- It **never deletes** anything.
+- **Plan first, write second.** The whole run is planned and checked before the first write. If anything is refused, **nothing** is written and **every** problem is listed, not just the first one. `--dry-run` prints that same plan and stops.
+- **Only inside the parent.** A page counts as "already published" only if it sits **below** `--parent` (at any depth). A page with the same title anywhere else in the space, the parent page itself, or a page that is archived or in the trash is refused: `"<title>" already exists outside <parent> … — not touching it. Use a distinct --prefix.` A `--parent` that lives in a different space than `--space` is refused too.
+- **Only pages it published itself.** Every page the tool creates gets an invisible Confluence content property, `cpub-managed`, recording which source it came from. Pages carrying the marker from the same source update silently. Any other page (written by hand, published by an older version of this tool, or from a different source) needs a **hand-over** (below).
+- **A cap on the blast radius.** A run that would update more than 25 existing pages is refused with the count; re-run with `--max-updates N` if that is really what you want. New pages don't count (nothing is lost).
+- **It never deletes or moves anything**, and never renames a page.
 - Each page body is **validated as XML before it is sent**, so malformed content fails locally instead of producing broken pages.
-- Credentials are read from the environment only and are never written to disk by the tool.
+- Credentials are never written to disk by the tool and the API token is never printed.
 
-The worst realistic failure is a mis-formatted page under your own parent, which you can edit or delete.
+If a write fails half-way (network drop, Confluence error), the run stops and lists the pages that were written and the ones that were not. Running the same command again is safe and finishes the job.
+
+### Hand-over: replacing a page the tool did not publish
+
+When the plan wants to update pages without a matching marker, it lists them (title, version, last edited) and asks:
+
+```
+Take over and replace 3 page(s) you did not publish? Type the number 3 to confirm:
+```
+
+Type the number to go ahead; anything else writes nothing. The pages get the marker, so the next run from the same source does not ask again. In a script or any non-interactive run there is no prompt: the run refuses unless you pass `--adopt`, which hands over the listed pages for this run only. There is deliberately no `--yes`: a blanket "yes" ends up pasted into scripts and then protects nothing.
+
+**Upgrading from v1.1:** pages published by v1.1 have no marker, so the **first** republish of an existing doc set shows them all as "not published by this tool" and asks for this hand-over once. After that, it runs exactly as before. If the doc set has more than 25 pages, add `--max-updates` for that run as well.
+
+The marker is an **accident guard, not access control**: anyone with edit rights can remove a content property. Confluence permissions remain the real boundary.
 
 ---
 
 ## Troubleshooting
 
+Every expected failure prints one sentence, a `Fix:` line, and, for Confluence errors, Confluence's own reason underneath. Before planning, every run makes one read-only request to check who your credentials log in as, because Confluence Cloud answers a wrong token as if you were anonymous (a misleading `404` later). "Confluence did not accept your email/API token" therefore really means the token or email, and the `Fix:` line names the file it came from. After that check, a `403` means your account can't edit that page or space, and a `404` names what was not found: the `--space` key, or the `--parent` page ("not found or not visible to you": it must exist, be a page and not a folder, and be visible to your account).
+
+**"The plan was refused … nothing was written".**
+A safety check stopped the run before the first write (see [Safety](#safety)). Every refused page is listed with its own `Fix:`. The most common one, a title that already exists elsewhere in the space, is fixed with a distinct `--prefix`.
+
+**"… need a one-time hand-over and this is not an interactive terminal".**
+The run was started from a script, a pipe or an editor hotkey, so it could not ask you. Run it once in a terminal and type the count, or add `--adopt`.
+
 **`HTTP Error 400` on publish (but `--dry-run` was fine).**
-The dry-run never exercises the write path, so a problem only surfaces on the real publish. The tool now prints Confluence's own reason. The usual causes:
+The dry-run reads from Confluence but never writes, so a problem in the write itself only surfaces on the real publish. The tool prints Confluence's own reason. The usual causes:
 
 - **Duplicate page title.** Titles must be unique within a space (see [step 3](#3-pick-a-unique-prefix-when-sharing-a-space)). Publish each repo with a distinct `--prefix`. If two files *in your own doc set* collide, the tool stops before contacting Confluence and names the file to rename.
 - **`--parent` is not a page in that space.** The parent must be a real **page** (URL shape `…/pages/<id>/<slug>`), and it must live in the `--space` you passed — not a folder, and not a page in another space.
@@ -166,7 +202,7 @@ Working today: end-to-end generation and publishing, including code macros, colo
 
 Not yet implemented (contributions welcome):
 
-- A `state.json` page map (currently pages are matched by title), to survive renames and skip unchanged pages.
+- A page map that survives renames (pages are matched by title inside the parent; the `cpub-managed` marker records ownership, not identity).
 - Content-hash skip of unchanged pages.
 - Exact heading-anchor links (`[[Page#Heading]]` currently lands on the page, not the heading).
 - A `--prune` option to remove pages whose source doc was deleted (off by default).

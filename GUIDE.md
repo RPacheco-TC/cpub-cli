@@ -167,14 +167,17 @@ Once you have reviewed the generated docs, you can publish them to Confluence Cl
 - A **Confluence Cloud account** and an **API token** — create one at <https://id.atlassian.com/manage-profile/security/api-tokens>.
 
 ### Step 1 — Set your credentials
-Copy `.env.example` to `.env`, fill in your values, and load them into your shell:
+Copy `.env.example` to `.env` and fill in your values. The publisher reads it by itself, so there is nothing to load into your shell:
 
 ```bash
 cp .env.example .env       # edit .env: base URL, email, API token
-set -a; . ./.env; set +a   # load into the shell — never commit .env
+chmod 600 .env             # only you can read it — never commit .env
 ```
 
 The base URL for Confluence Cloud ends in `/wiki`, for example `https://your-company.atlassian.net/wiki`.
+
+> [!tip] One credentials file for every repo
+> Put the same three lines in `~/.config/confluence-publisher/.env` instead, and every repo and folder can publish without its own `.env`. Each variable is looked up in this order, first hit wins: a real environment variable, then `--env-file PATH`, then `./.env` in the folder you run from, then `~/.config/confluence-publisher/.env`. If something is missing, the error lists every place it looked.
 
 ### Step 2 — Choose the space and create a parent PAGE
 
@@ -207,7 +210,7 @@ That number is the `--parent` value.
 ### Step 3 — Choose a unique prefix (per repo)
 
 > [!important] Confluence page titles must be unique **within a space**
-> You cannot have two pages with the same title in the same space — not even two. So if you publish more than one repo's docs into a **shared** space, generic titles like `01 - Welcome and Quick Start` or `In Situ` will collide, and the second publish fails with `HTTP 400`.
+> You cannot have two pages with the same title in the same space — not even two. So if you publish more than one repo's docs into a **shared** space, generic titles like `01 - Welcome and Quick Start` or `In Situ` will collide. The second publish is then refused before anything is written, because the same-titled page lives in the other repo's tree.
 
 The fix is `--prefix`: a short unique identifier (usually the repo name) that the publisher prepends to **every** page title. Pick a distinct value per repo:
 
@@ -226,26 +229,38 @@ Notes:
 ### Step 4 — Dry-run, then publish
 ```bash
 # Preview the plan — writes nothing:
-python3 confluence_publish.py "/path/to/my-repo-docs" --space DOCS --parent 123456789 --prefix langflow --dry-run
+python3.12 confluence_publish.py "/path/to/my-repo-docs" --space DOCS --parent 123456789 --prefix langflow --dry-run
 
 # Publish for real:
-python3 confluence_publish.py "/path/to/my-repo-docs" --space DOCS --parent 123456789 --prefix langflow
+python3.12 confluence_publish.py "/path/to/my-repo-docs" --space DOCS --parent 123456789 --prefix langflow
 ```
 
-Use your team space key (e.g. `DOCS`) for real publishing, or `--space "~yourname"` to trial it in your personal space first. You will see a per-page `CREATE` / `UPDATE` plan (showing the actual prefixed titles) and how many diagrams each page carries. Re-running updates the same pages in place (matched by title), so it is safe to run again after editing the Markdown.
+Use your team space key (e.g. `DOCS`) for real publishing, or `--space "~yourname"` to trial it in your personal space first. You will see a per-page `CREATE` / `UPDATE` plan (showing the actual prefixed titles), how many diagrams each page carries, and who owns the pages it would update. After a real publish it ends with a link to the parent page. Re-running updates the same pages in place (matched by title, below the parent only), so it is safe to run again after editing the Markdown. The dry-run runs exactly the same checks as the real publish.
 
-> [!note] Two collisions, two safeguards
-> If two source files in **your own folder** resolve to the same title, the publisher stops *before* contacting Confluence and tells you which file to rename. If a title collides with a page **already in the space**, Confluence's own `400` reason is now printed in full — and `--prefix` is the way to avoid it.
+> [!note] Collisions are caught before anything is written
+> If two source files in **your own folder** resolve to the same title, the publisher stops *before* contacting Confluence and tells you which file to rename. If a title already exists **elsewhere in the space** (outside your parent page), the whole run is refused with nothing written and every clashing page listed — `--prefix` is the way to avoid it.
+
+### Step 5 — The one-time hand-over (first publish, or upgrading from v1.1)
+
+The publisher only replaces pages it published itself: it marks every page it creates with an invisible Confluence content property (`cpub-managed`) that records the source. When the plan wants to update a page **without** that mark (written by hand, or published by v1.1 of this tool, which did not mark pages), it lists those pages with their version and last-edit date and asks:
+
+```
+Take over and replace 18 page(s) you did not publish? Type the number 18 to confirm:
+```
+
+Type the number to go ahead; anything else writes nothing. The pages are marked as they are written, so from the next run on there is no question. In a non-interactive run (a script, a pipe, an editor hotkey) there is no prompt: the run refuses unless you add `--adopt`, which hands over the listed pages for that run only. There is no `--yes`.
+
+**Already published with v1.1?** Your first republish shows every page as "not published by this tool" and asks once. A set with more than 25 pages also needs `--max-updates N` for that run, because one run may update at most 25 existing pages by default (new pages don't count).
 
 ### What lands in Confluence
 - The numbered docs become **child pages** of your parent page; the `In Situ/` folder becomes an `In Situ` page with the deep-dives beneath it.
 - **Mermaid diagrams** are rendered to images and embedded; **`[[wikilinks]]`** become real Confluence page links; **code blocks** and **callouts** become code macros and colored panels.
 
 > [!tip] Why this is safe
-> The publisher only creates or updates pages under the parent id you pass, validates every page before sending it, and never deletes. The worst realistic outcome is a mis-formatted page under your own parent, which you can fix or delete.
+> Every run is planned and checked before the first write; one refusal means nothing is written. The publisher only updates pages **below** the parent you pass that it published itself (or that you just handed over), updates at most 25 existing pages per run unless you raise `--max-updates`, validates every page before sending it, and never deletes, moves or renames anything. The marker is an accident guard, not access control: Confluence permissions remain the real boundary.
 
 ---
 
 ## In one sentence
 
-**Generate:** install Claude Code and Obsidian, copy `template.yaml` next to your repo, paste the generation prompt into Claude Code with your two paths filled in, and review the result in Obsidian. **Publish:** set your three Confluence credentials in `.env`, then run `confluence_publish.py <docs-folder> --space KEY --parent PAGE_ID --prefix <repo-name>` (try `--dry-run` first; the `--prefix` keeps each repo's titles unique in a shared space).
+**Generate:** install Claude Code and Obsidian, copy `template.yaml` next to your repo, paste the generation prompt into Claude Code with your two paths filled in, and review the result in Obsidian. **Publish:** set your three Confluence credentials in `.env` (or `~/.config/confluence-publisher/.env`), then run `python3.12 confluence_publish.py <docs-folder> --space KEY --parent PAGE_ID --prefix <repo-name>` (try `--dry-run` first; the `--prefix` keeps each repo's titles unique in a shared space).

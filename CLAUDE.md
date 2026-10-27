@@ -14,22 +14,27 @@ The Markdown is the source of truth; Confluence is a derived, re-publishable vie
 ## Commands
 
 ```bash
-# Load credentials (never committed) into the shell
+# Credentials (never committed); the CLI loads them itself — no `set -a` needed
 cp .env.example .env       # then edit: CONFLUENCE_BASE_URL (ends in /wiki), CONFLUENCE_EMAIL, CONFLUENCE_API_TOKEN
-set -a; . ./.env; set +a
+chmod 600 .env
 
-# Always dry-run first — resolves the CREATE/UPDATE plan and writes nothing
-python3 confluence_publish.py DOCS_DIR --space KEY --parent PAGE_ID --prefix REPO --dry-run
+# Always dry-run first — builds and checks the full plan, writes nothing
+python3.12 confluence_publish.py DOCS_DIR --space KEY --parent PAGE_ID --prefix REPO --dry-run
 
 # Publish for real
-python3 confluence_publish.py DOCS_DIR --space KEY --parent PAGE_ID --prefix REPO
+python3.12 confluence_publish.py DOCS_DIR --space KEY --parent PAGE_ID --prefix REPO
 ```
+
+- **Credential lookup order, per variable, first hit wins:** real env vars → `--env-file PATH` → `./.env` (cwd) → `$XDG_CONFIG_HOME/confluence-publisher/.env` (default `~/.config/…`). `load_env()` parses `KEY=VALUE` / `export` / quotes / comments without executing anything; a missing `--env-file` is an error, a missing `./.env` or user file is not; a token file with `mode & 0o077` gets a `chmod 600` warning and the run continues. The `set -a; . ./.env; set +a` workflow still works (env wins).
 
 - `--space` is the **key** (e.g. `ENG`, or `~yourname` for a personal space), resolved to a numeric space id at runtime.
 - `--parent` must be a real **page** id, never a folder — the v2 API does not reliably publish under folders.
 - `--prefix` is required in practice when several repos share one space, because Confluence titles must be unique *within a space*.
 - `--img-dir` overrides where Mermaid PNGs are rendered; it defaults to `<docs_dir>/.img` (gitignored, regenerated each publish).
 - `--img-width PX` (optional) sets `ac:width` on every Mermaid `ac:image`; unset means no attribute, i.e. unchanged output.
+- `--max-updates N` (default 25) caps how many *existing* pages one run may UPDATE; creates don't count.
+- `--adopt` hands over every page listed for hand-over, for this run only, without the typed prompt (non-interactive runs). There is deliberately **no `--yes`** — do not add one (decision D4).
+- Every example and message names the command `python3.12 confluence_publish.py`. There is no `cpub` command or `setup` subcommand yet; do not mention them in output or docs.
 
 ```bash
 # Regression tests — stdlib unittest, in-process and offline (no network, no npx,
@@ -72,8 +77,11 @@ Mermaid rendering is driven by **module-level globals** in `md_to_confluence.py`
 
 ### Publishing semantics
 
-- **Idempotency is by exact title match**, not a stored page map. `find_page_id_by_title` pages through *all* results (following `_links.next`), so re-publishing reliably UPDATEs rather than spuriously CREATEs. Re-running after editing Markdown is safe.
-- **Never deletes; only creates/updates under the `--parent` you pass.** This is the core safety property — do not add deletion without an explicit opt-in flag (a `--prune` is listed as a deliberately-unimplemented future option).
+- **Plan first, write second (E0).** `main()` calls `build_plan()` (read-only: converts + validates every body, matches titles, reads page info, ancestors and the marker), then `check_plan()` (pure; returns *all* refusals), and only then `execute_plan()`, which re-checks and is the **only** code path allowed to call `create_page` / `update_page`. Any refusal aborts with zero writes and lists every offender. `--dry-run` is the same path stopped before `execute_plan`, so a passing dry-run means the real checks pass. A mid-run write failure raises `PlanExecutionError` whose report lists written vs not-written pages; re-running is safe.
+- **Idempotency is by exact title match, fenced to the subtree.** A title match is an UPDATE target only if the page is a **strict descendant** of `--parent` (v2 ancestors); a match elsewhere in the space, the parent itself, an archived/trashed page, or a `--parent` in another space is refused. The `In Situ` container is fenced like every page (an existing one is never rewritten, as in v1.1).
+- **Ownership marker `cpub-managed`** (a v2 content property, written in a *separate* call after the body — never inside the body, so storage bodies stay byte-identical to v1.1) records `{source, tool, since}`; source = prefixed title. Managed + same source → silent UPDATE; unmanaged or other source → **hand-over**: on a TTY the CLI lists the pages and asks `Take over and replace N page(s) you did not publish? Type the number N to confirm:`; non-TTY needs `--adopt` or refuses (never hangs). v1.1-published sets need this hand-over once on their first republish. The marker is an accident guard, **not access control**.
+- **Never deletes, never moves (no `parentId` on update), never renames.** This is the core safety property — do not add deletion without an explicit opt-in flag (a `--prune` is listed as a deliberately-unimplemented future option).
+- **CLI output contract:** the v1.1 `ACTION DIAGRAMS TITLE` table is byte-identical; ownership summary, hand-over list and refusals print around it, and a successful run ends with `Parent page: <url>`. Before planning, `main()` calls `whoami()` (one read-only GET `/rest/api/user/current`): Cloud serves a bad token anonymously, so this is the only reliable "bad credentials" signal — never infer it from a 404. Expected failures (`CliError`) print `Error: <one sentence>` + `Fix: <one line>` + indented raw detail (Confluence's `HTTPError.detail` is kept) and never a traceback; the API token is masked in every message.
 - **Layout:** top-level `NN - Title.md` files become children of the parent; an `In Situ/` subfolder (matched case-insensitively via `find_insitu_dir`) becomes an `In Situ` container page with the deep-dives beneath it.
 - **Attachments** (rendered Mermaid PNGs) are content-hash-named; `existing_attachment_names` skips names already present, since re-uploading a duplicate filename returns HTTP 400. **They must be uploaded *before* the body that references them is saved:** Confluence links each `ri:attachment` at save time (`ri:version-at-save`), and an unlinked reference renders in view mode but shows "Preview not available" in the editor and is dropped on the user's next save. So UPDATE uploads then saves; CREATE (the page must exist to take attachments) creates, uploads, then saves the body again. `tests/test_publish_order.py` pins this order.
 - **Pre-flight duplicate check:** `main()` rejects a doc set with two files resolving to the same title *before* contacting Confluence, naming the colliding files.
@@ -92,7 +100,8 @@ These shape the Markdown the publisher consumes, so they matter when debugging "
 ## Operational gotchas
 
 - **macOS `ssl.SSLCertVerificationError: CERTIFICATE_VERIFY_FAILED` on publish.** Affects the **python.org** Python build, which ships a CA bundle that isn't installed by default (Homebrew's `python@3.12` works out of the box; Apple's `/usr/bin/python3` is 3.9 and no longer supported). Fix once by running the bundled `/Applications/Python 3.x/Install Certificates.command` (or `pip install --upgrade certifi` for that interpreter). Do **not** work around it by disabling certificate verification — that removes the security the check provides. See README troubleshooting.
-- **A `400` only ever surfaces on the real publish, never on `--dry-run`** (the dry-run never exercises the write path). The usual causes are a duplicate title in the space (use a distinct `--prefix`) or a `--parent` that is a folder, or a page in a different space than `--space`.
+- **A `400` only ever surfaces on the real publish, never on `--dry-run`** (the dry-run reads but never exercises the write path). A duplicate title elsewhere in the space and a `--parent` in another space are now refused at plan time; a `400` that remains usually means `--parent` is a folder.
+- **Tests must not pick up a real `./.env`.** The repo root may hold a developer's `.env`; CLI tests stub `load_env` / `env_search_paths` (and the REST helpers) on the module instead of reading files.
 
 ## Do not touch the project `.gitignore` for tooling/personal files
 

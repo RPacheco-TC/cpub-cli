@@ -64,17 +64,29 @@ class ImgWidthArgument(unittest.TestCase):
         self.assertIsNone(args.img_width)
 
 
+@contextlib.contextmanager
+def no_env_files():
+    """Stub the credential-file lookup so a developer's real ./.env is never read."""
+    saved = cp.load_env, cp.env_search_paths
+    cp.load_env = lambda *a, **k: {}
+    cp.env_search_paths = lambda *a, **k: []
+    try:
+        yield
+    finally:
+        cp.load_env, cp.env_search_paths = saved
+
+
 class MainPreflight(unittest.TestCase):
     """main() keeps its early exits; both happen before any network call."""
 
     def test_missing_credentials(self):
-        with environ(NO_CREDS):
+        with environ(NO_CREDS), no_env_files():
             with self.assertRaises(SystemExit) as ctx:
                 cp.main([*ARGS, "--img-width", "700"])
-        self.assertIn("Missing environment variable", str(ctx.exception.code))
+        self.assertIn("Missing Confluence credential(s)", str(ctx.exception.code))
 
     def test_not_a_folder(self):
-        with environ(DUMMY_CREDS):
+        with environ(DUMMY_CREDS), no_env_files():
             with self.assertRaises(SystemExit) as ctx:
                 cp.main(["no/such/dir/for/tests", "--space", "X", "--parent", "1", "--dry-run"])
         self.assertIn("Not a folder", str(ctx.exception.code))
