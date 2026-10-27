@@ -53,8 +53,10 @@ confluence_publish.py   thin entry shim: from confluence_publisher.cli import ma
 confluence_publisher/
   __init__.py      Python >= 3.12 guard (3.9-parseable) + __version__
   __main__.py      python3.12 -m confluence_publisher (same usage/error lines as the shim)
-  cli.py           PublishCommand (the ONE composition root), ArgumentParserFactory,
-                   PlanPrinter, HandoverPrompt, ErrorTranslator; main()/build_parser() entry points
+  cli.py           PublishCommand (the ONE composition root), ArgumentParserFactory;
+                   main()/build_parser() entry points
+  cli_output.py    PlanPrinter (table, ownership, footer), HandoverPrompt (typed-count prompt)
+  cli_errors.py    ErrorTranslator (every expected failure -> CliError sentence + Fix:)
   errors.py        PublisherError base: CliError, MissingCredentials, SpaceNotFound, NotAFolder,
                    PlanRefused, HandoverRequired, HandoverDeclined, PlanExecutionError
   config.py        Credentials (frozen: base_url, email, token, sources; mask(), token_source),
@@ -77,12 +79,13 @@ template.yaml      Stage 1 contract (stays at the root)
 
 ```
 markdown_html  <-  storage  <-  plan  <-  executor  <-  cli
+cli_output <- cli_errors <- cli (output/error wording never imports api, plan or config)
 docset <- plan; plan reads only constants from api; cli imports every module (composition root)
 errors: imports nothing; config, api, docset import only errors
 storage, markdown_html: never import api — conversion stays pure and offline
 ```
 
-One responsibility per module, none over ~650 lines (after R2: cli 645, markdown_html 641, api 390, storage 373, plan 230, config 202, executor 124, docset 121, errors 91). Lines stay at 100 characters or fewer.
+One responsibility per module, none over ~650 lines (markdown_html 641, api 390, storage 373, cli 321, plan 230, config 202, cli_errors 195, cli_output 150, executor 124, docset 121, errors 91). Lines stay at 100 characters or fewer.
 
 **Composition.** `PublishCommand.from_args(args, out, **overrides)` is the only place that builds the real objects: `CredentialLoader().load()` → `ConfluenceClient(creds, HttpTransport())` → `DocSet.from_folder()` → `Planner(client, StorageConverter(prefix, img_dir, img_width)).build(...)` → `plan.refusals()` → `PlanExecutor(client).execute(...)`. No other module constructs a `ConfluenceClient`.
 
@@ -97,7 +100,7 @@ One responsibility per module, none over ~650 lines (after R2: cli 645, markdown
 - **A new Markdown → Confluence transform** (a macro, a link form, an embed): `storage.py`, as a step in `StorageConverter.convert()` at an explicit position in the ordering below; a new pre-conversion extractor subclasses `FenceAwareExtractor` and adds only its own pattern (never its own fence logic). Generic, non-Confluence Markdown syntax goes in `MarkdownRenderer`. Neither may call the REST API: anything that needs Confluence data is looked up by the caller (the planner) and passed in.
 - **A new safety rule or refusal:** `plan.py` (`Plan.refusals()` returns a `Refusal` with `message` and `fix`); its wording on screen is `ErrorTranslator` in `cli.py`. Anything that writes belongs in `PlanExecutor`, nowhere else.
 - **A new REST call:** a method on `ConfluenceClient` in `api.py`, through its transport (keeps `HTTPError.detail`).
-- **A new flag, prompt, message or output line:** `cli.py` — flags in `ArgumentParserFactory`, printing in `PlanPrinter`, failures in `ErrorTranslator` (expected failures are `errors.CliError(sentence, fix, detail)`, never a bare `SystemExit` string), the run's steps in `PublishCommand`.
+- **A new flag, prompt, message or output line:** flags in `ArgumentParserFactory` and the run's steps in `PublishCommand` (`cli.py`); printing and prompts in `PlanPrinter` / `HandoverPrompt` (`cli_output.py`); failures in `ErrorTranslator` (`cli_errors.py` — expected failures are `errors.CliError(sentence, fix, detail)`, never a bare `SystemExit` string).
 - **A new collaborator** (e.g. a page-ref parser in 1b): its own class, constructed in `PublishCommand.from_args()` and passed in; never constructed inside another class.
 - **Tests inject fakes through constructors** — `FakeConfluence` as the client's transport, `PublishCommand.from_args(args, out, client_factory=…, prompt=HandoverPrompt(out, ask=…, stdin=…))`, `CredentialLoader(environ=…, read_file=…)`. No `setattr` patching of package code.
 
