@@ -16,7 +16,7 @@ The Markdown is the source of truth; Confluence is a derived, re-publishable vie
 ```bash
 # Install the command (zero dependencies; uv brings Python 3.12+); or use pipx
 uv tool install git+https://github.com/RPacheco-TC/obx-confluence-obsidian-publisher
-cpub --version                       # cpub 1.3.0; `confluence-publish` is the same command
+cpub --version                       # cpub 1.4.0; `confluence-publish` is the same command
 # From a clone, these are equivalent to `cpub …`:
 #   python3.12 confluence_publish.py …      python3.12 -m confluence_publisher …
 
