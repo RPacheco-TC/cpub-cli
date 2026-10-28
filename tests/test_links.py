@@ -57,14 +57,50 @@ class Restore(unittest.TestCase):
 
     def test_prefixed_targets_are_looked_up_prefixed(self):
         doc = storage.StorageConverter(prefix="R").convert("[[A]] [[B]]\n")
-        self.assertEqual(doc.unresolved({"R - A"}.__contains__), ["B"])   # as written
+        self.assertEqual(doc.unresolved({"R - A"}.__contains__), ["R - B"])  # the missing title
         self.assertIn("<em>B</em>", doc.relink({"R - A"}.__contains__).html)
 
 
-    def test_names_are_as_written_without_anchor_or_alias(self):
+    def test_names_are_the_missing_titles_without_anchor_or_alias(self):
         doc = storage.StorageConverter(prefix="R").convert(
             "[[Other note#Part|label]] [[Other note]] [[#Only anchor]]\n")
-        self.assertEqual(doc.unresolved(lambda t: False), ["Other note", "#Only anchor"])
+        self.assertEqual(doc.unresolved(lambda t: False), ["R - Other note", "#Only anchor"])
+        plain = storage.StorageConverter().convert("[[Other note#Part|label]]\n")
+        self.assertEqual(plain.unresolved(lambda t: False), ["Other note"])  # no prefix
+
+
+class InlineCode(unittest.TestCase):
+    """B11: [[…]] in an inline code span stays literal, like in a fenced block."""
+
+    def convert(self, md):
+        return storage.StorageConverter().convert(md)
+
+    def test_single_and_double_backtick_spans_stay_literal(self):
+        for md in ("Write `[[X]]` to link.\n", "Write ``[[X]]`` to link.\n"):
+            with self.subTest(md=md):
+                doc = self.convert(md)
+                self.assertEqual(doc.links, {})
+                self.assertIn("<code>[[X]]</code>", doc.html)
+                self.assertNotIn("ac:link", doc.html)
+
+    def test_a_span_next_to_a_real_link(self):
+        doc = self.convert("Type `[[Note]]` to get [[Note]]; also `a` [[B|b]] `c`.\n")
+        self.assertEqual([(l.target, l.display) for l in doc.links.values()],
+                         [("Note", "Note"), ("B", "b")])
+        self.assertIn("<code>[[Note]]</code>", doc.html)
+        self.assertIn(link("Note", "Note"), doc.html)
+        self.assertEqual(doc.unresolved(lambda t: False), ["Note", "B"])
+
+    def test_an_unclosed_backtick_is_not_a_span(self):
+        doc = self.convert("A stray ` then [[X]]\n")
+        self.assertIn(link("X", "X"), doc.html)
+
+    def test_toc_and_callouts_are_line_based_and_unaffected(self):
+        md = "[[TOC]]\n\n> [!note] See `code`\n> body\n"
+        self.assertEqual(self.convert(md).html,
+                         storage.StorageConverter().convert(md).html)
+        self.assertIn('ac:name="toc"', self.convert(md).html)
+        self.assertIn('ac:name="info"', self.convert(md).html)
 
 
 class Escaping(unittest.TestCase):

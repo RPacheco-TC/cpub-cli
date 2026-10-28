@@ -29,12 +29,27 @@ def strip_frontmatter(text: str) -> str:
     return text
 
 
+#: An inline code span (one backtick each side); the one pattern for "is this code",
+#: shared with :mod:`.storage`'s wikilink extraction (B11).
+CODE_SPAN_RE = re.compile(r'`([^`]+)`')
+
+
+def outside_code(text: str, func) -> str:
+    """Apply ``func`` to the text between inline code spans; spans stay as written."""
+    out, end = [], 0
+    for span in CODE_SPAN_RE.finditer(text):
+        out += [func(text[end:span.start()]), span.group()]
+        end = span.end()
+    return "".join(out) + func(text[end:])
+
+
 def convert_wikilinks(text: str) -> str:
     """Convert Obsidian ``[[wikilinks]]`` to plain text.
 
     Internal links are not useful in Confluence, so they are flattened:
     ``[[Page|Alias]]`` becomes ``Alias``; ``[[Page#Heading]]`` becomes ``Page``;
     ``![[embed]]`` becomes ``embed`` (the leading ``!`` of an embed is dropped).
+    Inside an inline code span a wikilink is code, so it is left as written (B11).
 
     :param text: the document text.
     :type text: str
@@ -46,7 +61,7 @@ def convert_wikilinks(text: str) -> str:
         if '|' in inner:
             return inner.split('|', 1)[1].strip()
         return inner.split('#', 1)[0].strip()
-    return re.sub(r'!?\[\[([^\]]+)\]\]', repl, text)
+    return outside_code(text, lambda part: re.sub(r'!?\[\[([^\]]+)\]\]', repl, part))
 
 
 def strip_glossary_links(text: str) -> str:
@@ -339,8 +354,8 @@ class MarkdownRenderer:
             return f'\x00{len(store) - 1}\x00'
 
         # Inline code `code` — escape content, then mask so emphasis/escaping skip it.
-        text = re.sub(r'`([^`]+)`',
-                      lambda m: stash('<code>' + escape_html(m.group(1)) + '</code>'), text)
+        text = CODE_SPAN_RE.sub(
+            lambda m: stash('<code>' + escape_html(m.group(1)) + '</code>'), text)
         # External links [text](url)
         text = re.sub(r'\[([^\]]+)\]\((https?://[^)]+)\)',
                       lambda m: stash('<a href="' + m.group(2).replace('&', '&amp;') + '">'

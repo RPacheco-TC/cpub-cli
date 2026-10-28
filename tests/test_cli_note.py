@@ -303,6 +303,13 @@ class LinksToMissingPages(NoteRun):
         self.assertIn("<em>the plan</em>", body)
         self.assertNotIn('ri:content-title="Missing note"', body)
 
+    def test_with_a_prefix_the_line_names_the_title_that_was_looked_up(self):
+        md = "See [[Missing note#Part|the plan]].\n"
+        msg, out, _ = self.run_cli("My Note.md", "--under", "10", "--prefix", "R", "--dry-run",
+                                   markdown=md)
+        self.assertIsNone(msg, msg)
+        self.assertEqual(out.count("1 link left as text: R - Missing note\n"), 1)
+
     def test_no_line_when_every_link_resolves(self):
         md = "See [[Hand written]].\n"
         _, out, _ = self.run_cli("My Note.md", "--to", "20", "--dry-run", markdown=md)

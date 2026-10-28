@@ -12,7 +12,7 @@ import dataclasses
 import html as ihtml
 import xml.etree.ElementTree as ET
 
-from .markdown_html import MarkdownRenderer, strip_frontmatter
+from .markdown_html import MarkdownRenderer, outside_code, strip_frontmatter
 from .mermaid import MermaidRenderer
 
 
@@ -132,8 +132,9 @@ class Wikilink:
 
     :param target: the (prefixed) title of the page it points at.
     :param display: the text shown (alias, else the target without its anchor).
-    :param name: the target as written (unprefixed, no anchor; the display text
-        for an anchor-only ``[[#Heading]]``), for messages.
+    :param name: the title that was looked up, for messages: the prefixed
+        target without its anchor (the display text for an anchor-only
+        ``[[#Heading]]``).
     """
     target: str
     display: str
@@ -259,6 +260,8 @@ class WikilinkExtractor(FenceAwareExtractor):
     Wikilinks inside fenced code blocks are intentionally left untouched. They
     are source code examples, not document navigation, and converting them to
     storage macros can break XML validation after code-block CDATA wrapping.
+    The same goes for inline code spans (B11), found with the renderer's own
+    pattern so both agree on what is code: `` `[[Note]]` `` stays literal.
 
     :param prefix: namespacing prefix applied to each link target, matching the
         prefix used when publishing the pages.
@@ -280,12 +283,15 @@ class WikilinkExtractor(FenceAwareExtractor):
             # too; fall back to the raw content for an anchor-only [[#Heading]].
             display = alias or target or content
             token = f"xLINK{len(links)}x"
-            links[token] = Wikilink(prefixed_title(self.prefix, target), display,
-                                    target or display)
+            title = prefixed_title(self.prefix, target)
+            links[token] = Wikilink(title, display, title if target else display)
             return token
 
+        def line_links(line):               # B11: links inside `code` stay as written
+            return outside_code(line, lambda part: _WIKILINK_RE.sub(repl, part))
+
         out = self.rewrite(md.splitlines(keepends=True),
-                           lambda lines, i: (i + 1, [_WIKILINK_RE.sub(repl, lines[i])]))
+                           lambda lines, i: (i + 1, [line_links(lines[i])]))
         return "".join(out), links
 
 
@@ -352,8 +358,8 @@ class StorageDocument:
     template: str | None = dataclasses.field(default=None, repr=False)
 
     def unresolved(self, exists) -> list:
-        """Links whose page is missing, as the reader wrote them (``Wikilink.name``:
-        no prefix, no anchor), distinct, in order of appearance.
+        """Titles whose page is missing (``Wikilink.name``: prefixed, no anchor),
+        distinct, in order of appearance.
 
         :param exists: ``title -> bool`` (asked with the prefixed title).
         :rtype: list[str]
