@@ -13,7 +13,7 @@ import ssl
 import sys
 import urllib.error
 
-from .errors import InsecureBaseUrl, MissingCredentials
+from .errors import InsecureBaseUrl, InvalidBaseUrl, MissingCredentials
 
 #: Check statuses. ``WARN`` never makes the run fail; ``SKIP`` = an earlier check failed.
 OK, WARN, FAIL, SKIP = "ok", "warn", "fail", "skip"
@@ -68,7 +68,9 @@ class EnvironmentCheck:
         - ``tls``: ``base_url``; on failure ``error`` (text) and ``cert`` (True for
           ``CERTIFICATE_VERIFY_FAILED``: the macOS ``Install Certificates`` case), or
           ``insecure`` (True: not ``https://`` nor ``http://`` to a loopback IP, so
-          nothing was sent and ``auth`` is skipped: the token would travel in clear).
+          nothing was sent and ``auth`` is skipped: the token would travel in clear),
+          or ``invalid`` (True: the URL does not parse; only ``source`` is given and
+          ``credentials`` carries no ``base_url``).
         - ``auth``: the ``whoami`` fields (``status``, ``type``, ``displayName``,
           ``email``), or ``status`` + ``detail`` for an unexpected HTTP error.
         - ``npx``: ``path`` and ``fallback`` (found outside ``PATH``); WARN if absent.
@@ -103,6 +105,8 @@ class EnvironmentCheck:
             return CheckResult("credentials", FAIL, {
                 "missing": list(e.missing),
                 "searched": [str(p) for p in e.searched]}), None
+        except InvalidBaseUrl as e:         # found, but unparseable: never echo the value
+            return CheckResult("credentials", OK, {"sources": e.sources}), e
         except InsecureBaseUrl as e:        # found, but unusable: reported under tls
             return CheckResult("credentials", OK, {"sources": e.sources,
                                                    "base_url": f"{e.scheme}://{e.host}"}), e
@@ -113,6 +117,9 @@ class EnvironmentCheck:
         """The ``tls`` and ``auth`` results, from one ``whoami`` call."""
         if creds is None:
             return [CheckResult("tls", SKIP), CheckResult("auth", SKIP)]
+        if isinstance(creds, InvalidBaseUrl):   # B9: nothing is sent
+            return [CheckResult("tls", FAIL, {"invalid": True, "source": creds.source}),
+                    CheckResult("auth", SKIP)]
         if isinstance(creds, InsecureBaseUrl):  # B8: never send the token unencrypted
             return [CheckResult("tls", FAIL, {"base_url": f"{creds.scheme}://{creds.host}",
                                               "insecure": True, "cert": False,

@@ -55,6 +55,9 @@ def files(mapping):
 
 
 ENV = {"HOME": "/home/u"}
+#: QA's B9 strings: urlsplit / .hostname raise ValueError on them.
+B9_URLS = ("http://[::1]%40evil.com/wiki", "http://[::1/wiki", "https://[::1/wiki",
+          "http://[evil.com]/wiki")
 CWD = "/work"
 USER = "/home/u/.config/confluence-publisher/.env"
 
@@ -133,7 +136,7 @@ class LoadEnv(unittest.TestCase):
     def test_http_base_url_is_refused_naming_its_source_never_the_token(self):
         """B8: no Credentials object can carry a non-https URL; nothing is sent."""
         for url in ("http://acme.atlassian.net/wiki", "HTTP://h/wiki", "ftp://h/wiki",
-                    "acme.atlassian.net/wiki", "http://user:pw@h:8080/wiki",
+                    "http://user:pw@h:8080/wiki",
                     "http://localhost:8080/wiki", "http://127.0.0.1.evil.com/wiki",
                     "http://[::2]/wiki"):
             fs = {"/work/.env": f"{URL}={url}\n{MAIL}=m\n{TOK}=s3cr3t-tok\n"}
@@ -151,15 +154,34 @@ class LoadEnv(unittest.TestCase):
                                  "(found http://h:8080).")
         self.assertEqual(cp.Credentials("HTTPS://H/wiki", "m", "t").base_url, "HTTPS://H/wiki")
 
+    def test_malformed_base_url_is_refused_without_echoing_it(self):
+        """B9: a URL that does not parse, has no host or a bad port is a typed error
+        that keeps no part of the value, never a traceback."""
+        for url in B9_URLS + ("acme.atlassian.net/wiki", "https:/no-host",
+                              "https://pw:s3cr3t@h:abc/wiki"):
+            fs = {"/work/.env": f"{URL}={url}\n{MAIL}=m\n{TOK}=s3cr3t-tok\n"}
+            loader = cp.CredentialLoader(cwd=CWD, environ=dict(ENV), read_file=files(fs))
+            with self.subTest(url=url), self.assertRaises(errors.InvalidBaseUrl) as cm:
+                loader.load()
+            e = cm.exception
+            self.assertEqual((str(e), e.source),
+                             ("CONFLUENCE_BASE_URL is not a valid URL.", "/work/.env"))
+            self.assertIsInstance(e, errors.PublisherError)
+            self.assertNotIn("s3cr3t", repr(vars(e)) + str(e))
+            self.assertFalse({"url", "host", "scheme"} & set(vars(e)))
+
     def test_http_to_a_loopback_ip_literal_is_allowed(self):
         """D29: a local test server only; the name localhost stays refused."""
         for url in ("http://127.0.0.1:8080/wiki", "http://127.5.5.5/wiki",
                     "http://[::1]:9000/wiki", "http://user@127.0.0.1/wiki",
-                    "HTTP://127.0.0.1/wiki"):
+                    "HTTP://127.0.0.1/wiki", "http://[::ffff:127.0.0.1]/wiki"):
             with self.subTest(url=url):
                 self.assertEqual(cp.Credentials(url, "m", "t").base_url, url)
         for url in ("http://localhost/wiki", "http://127.0.0.1.evil.com/wiki",
-                    "http://10.0.0.1/wiki", "http://user@localhost@127.0.0.1.evil.com/"):
+                    "http://10.0.0.1/wiki", "http://user@localhost@127.0.0.1.evil.com/",
+                    "http://127.0.0.1@evil.com/wiki", "http://evil.com#@127.0.0.1/wiki",
+                    "http://0x7f.0.0.1/wiki", "http://2130706433/wiki", "http://127.1/wiki",
+                    "http://127.0.0.1%2f@evil.com/"):
             with self.subTest(url=url), self.assertRaises(errors.InsecureBaseUrl):
                 cp.Credentials(url, "m", "t")
 

@@ -83,6 +83,16 @@ class Transport(unittest.TestCase):
             with self.subTest(url=url), self.assertRaises(errors.InsecureBaseUrl):
                 t.request("GET", url, headers={"Authorization": "Basic c2VjcmV0"})
 
+    def test_transport_refuses_a_malformed_url_before_any_request(self):
+        """B9: the same gate as Credentials; nothing reaches urlopen."""
+        def urlopen(request, timeout):
+            raise AssertionError("a request was sent")
+        t = api.HttpTransport(urlopen=urlopen)
+        for url in ("http://[::1]%40evil.com/wiki/x", "http://[::1/wiki/x",
+                    "https://[::1/wiki/x", "http://[evil.com]/wiki/x"):
+            with self.subTest(url=url), self.assertRaises(errors.InvalidBaseUrl):
+                t.request("GET", url)
+
     def test_transport_allows_http_to_a_loopback_ip_literal(self):
         """D29: QA's local recorder on http://127.0.0.1 keeps working."""
         sent = []

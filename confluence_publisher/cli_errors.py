@@ -81,6 +81,16 @@ class ErrorTranslator:
         return CliError(f"CONFLUENCE_BASE_URL must start with https:// (found {found}).",
                         f"Change it to {target} in {where}. Nothing was sent.")
 
+    @staticmethod
+    def invalid_base_url(source):
+        """B9: a CONFLUENCE_BASE_URL that cannot be parsed. The value is never echoed
+        (it may hold a user:password); nothing was sent."""
+        where = ("the environment variable CONFLUENCE_BASE_URL"
+                 if source in (None, "environment") else str(source))
+        return CliError("CONFLUENCE_BASE_URL is not a valid URL.",
+                        f"Use the form https://<your-site>.atlassian.net/wiki in {where}. "
+                        "Nothing was sent.")
+
     # flag combinations (note vs folder)
     @staticmethod
     def no_such_path(path):

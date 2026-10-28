@@ -11,7 +11,8 @@ import urllib.error
 
 from .errors import (CliError, MissingCredentials, SpaceNotFound, NotAFolder, PlanRefused,
                      HandoverRequired, HandoverDeclined, PlanExecutionError, BadPageRef,
-                     NotAMarkdownFile, DiagramsUnrenderable, InsecureBaseUrl)
+                     NotAMarkdownFile, DiagramsUnrenderable, InsecureBaseUrl,
+                     InvalidBaseUrl)
 from .docset import TO_KEY, UNDER_KEY
 from .pageref import PageRef
 from .cli_output import PlanPrinter
@@ -73,6 +74,8 @@ class PublishFlow:
         except InsecureBaseUrl as e:                # the transport's own check (B8)
             err = ErrorTranslator.insecure_base_url(e.scheme, e.host, e.source)
             raise SystemExit(self.errors.mask(str(err))) from None
+        except InvalidBaseUrl as e:                 # the transport's own check (B9)
+            raise SystemExit(str(ErrorTranslator.invalid_base_url(e.source))) from None
 
     # -- steps --
 
@@ -86,6 +89,8 @@ class PublishFlow:
             raise self.errors.missing_credentials(e.missing, e.searched) from None
         except InsecureBaseUrl as e:               # B8: refused before any client exists
             raise ErrorTranslator.insecure_base_url(e.scheme, e.host, e.source) from None
+        except InvalidBaseUrl as e:                # B9: unparsable; the value is never shown
+            raise ErrorTranslator.invalid_base_url(e.source) from None
         self.errors = ErrorTranslator(a, credentials, command=self.command)
         return credentials
 

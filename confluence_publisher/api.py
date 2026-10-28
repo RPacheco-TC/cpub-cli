@@ -44,9 +44,9 @@ class HttpTransport:
         :raises urllib.error.HTTPError: with Confluence's response body on ``.detail``.
         :raises InsecureBaseUrl: for a URL the token may not travel on; nothing is
             sent (B8/D29, the same rule as :class:`~.config.Credentials`).
+        :raises InvalidBaseUrl: for a URL that does not parse (B9).
         """
-        if not InsecureBaseUrl.allows(url):
-            raise InsecureBaseUrl(url)
+        InsecureBaseUrl.check(url)
         r = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
         try:
             with self.urlopen(r, timeout=self.timeout) as resp:

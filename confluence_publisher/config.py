@@ -36,8 +36,9 @@ class Credentials:
     """The three values that authenticate every Confluence call.
 
     :param base_url: site URL ending in ``/wiki`` (a trailing ``/`` is dropped); it
-        must pass :meth:`~.errors.InsecureBaseUrl.allows` (``https://``, or ``http://``
-        to a loopback IP literal) or :class:`~.errors.InsecureBaseUrl` is raised (B8).
+        must pass :meth:`~.errors.InsecureBaseUrl.check`: ``https://`` (or ``http://``
+        to a loopback IP literal), else :class:`~.errors.InsecureBaseUrl`; a URL that
+        does not parse or has no host, else :class:`~.errors.InvalidBaseUrl`.
     :param email: the Atlassian account email.
     :param token: the API token; never shown by ``repr`` or :meth:`masked`.
     :param sources: ``{var: "environment" | file path}``, where each value came from.
@@ -49,8 +50,7 @@ class Credentials:
 
     def __post_init__(self):
         object.__setattr__(self, "base_url", self.base_url.rstrip("/"))
-        if not InsecureBaseUrl.allows(self.base_url):   # B8/D29: none can be insecure
-            raise InsecureBaseUrl(self.base_url, self.sources)
+        InsecureBaseUrl.check(self.base_url, self.sources)  # B8/B9/D29: none can be unsafe
 
     def auth_header(self) -> str:
         """The HTTP Basic ``Authorization`` header value."""
@@ -260,6 +260,7 @@ class CredentialLoader:
         :raises FileNotFoundError: if ``env_file`` is given and does not exist.
         :raises MissingCredentials: naming the unset variables and the files searched.
         :raises InsecureBaseUrl: if ``CONFLUENCE_BASE_URL`` is not allowed (B8/D29).
+        :raises InvalidBaseUrl: if it is not a valid URL (B9).
         """
         resolved = self.resolve(env_file)
         missing = tuple(v for v in CRED_VARS if v not in resolved)

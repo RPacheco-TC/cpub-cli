@@ -8,6 +8,8 @@ results. Run from the repo root::
 """
 import contextlib
 import io
+import pathlib
+import types
 import ssl
 import unittest
 import urllib.error
@@ -297,13 +299,13 @@ class Check(unittest.TestCase):
 class InsecureBaseUrl(unittest.TestCase):
     """B8: an http:// base URL is refused before any client exists; the token never shows."""
 
-    def run_publish(self, url, files=None):
+    def run_publish(self, url, extra=()):
         environ = {"CONFLUENCE_BASE_URL": url, "CONFLUENCE_EMAIL": "a@b.c",
                    "CONFLUENCE_API_TOKEN": TOKEN}
         built = []
         loader = config.CredentialLoader(environ=environ, cwd="/proj", config_dir="/cfg",
                                          read_file=lambda p: None, warn=lambda m: None)
-        args = cli.build_parser("cpub").parse_args(["note.md", "--to", "1", "--dry-run"])
+        args = cli.build_parser("cpub").parse_args(["note.md", "--to", "1", *extra])
         cmd = cli.PublishCommand.from_args(
             args, io.StringIO(), command="cpub", credential_loader=loader,
             client_factory=lambda creds: built.append(creds),
@@ -333,6 +335,64 @@ class InsecureBaseUrl(unittest.TestCase):
         self.assertIn("✗ CONFLUENCE_BASE_URL must start with https:// "
                       "(found http://acme.atlassian.net)\n"
                       "  Fix: Change it to https://acme.atlassian.net/wiki in "
+                      f"{PATH}. Nothing was sent.", out.getvalue())
+
+
+class InvalidBaseUrlWording(unittest.TestCase):
+    """B9: an unparsable base URL; the raw value is never shown."""
+
+    def test_wording(self):
+        e = cli.ErrorTranslator.invalid_base_url
+        self.assertEqual(str(e(PATH)).splitlines(), [
+            "Error: CONFLUENCE_BASE_URL is not a valid URL.",
+            f"Fix: Use the form https://<your-site>.atlassian.net/wiki in {PATH}. "
+            "Nothing was sent."])
+        self.assertIn("in the environment variable CONFLUENCE_BASE_URL.", str(e("environment")))
+
+    BAD = ("http://[::1]%40evil.com/wiki", "http://[::1/wiki", "https://[::1/wiki",
+           "http://[evil.com]/wiki", "acme.atlassian.net/wiki")
+
+    def test_publish_and_dry_run_refuse_before_any_client(self):
+        for url in self.BAD:
+            for extra in ((), ("--dry-run",)):
+                with self.subTest(url=url, extra=extra):
+                    msg = InsecureBaseUrl.run_publish(self, url, extra)
+                    self.assertEqual(msg.splitlines(), [
+                        "Error: CONFLUENCE_BASE_URL is not a valid URL.",
+                        "Fix: Use the form https://<your-site>.atlassian.net/wiki in the "
+                        "environment variable CONFLUENCE_BASE_URL. Nothing was sent."])
+                    self.assertNotIn(TOKEN, msg)
+                    self.assertNotIn("evil", msg)
+
+    def test_check_runs_the_real_checks_with_zero_calls(self):
+        for url in self.BAD:
+            with self.subTest(url=url):
+                calls = []
+                loader = config.CredentialLoader(
+                    environ={"CONFLUENCE_BASE_URL": url, "CONFLUENCE_EMAIL": "a@b.c",
+                             "CONFLUENCE_API_TOKEN": TOKEN},
+                    cwd="/proj", config_dir="/cfg", read_file=lambda p: None,
+                    warn=lambda m: None)
+                dirs = types.SimpleNamespace(find_executable=lambda *a, **k: None,
+                                             home=pathlib.Path("/h"))
+                env_check = checks.EnvironmentCheck(loader, calls.append, dirs, "cpub")
+                out = io.StringIO()
+                args = cli.subcommand_parser("check", "cpub").parse_args([])
+                with self.assertRaises(SystemExit):
+                    cli.build_subcommand("check", args, out, "cpub", checks=env_check).run()
+                self.assertEqual(calls, [])
+                self.assertIn("✗ CONFLUENCE_BASE_URL is not a valid URL", out.getvalue())
+                self.assertNotIn("evil", out.getvalue())
+                self.assertNotIn(TOKEN, out.getvalue())
+
+    def test_check_words_it(self):
+        out = io.StringIO()
+        status = cli_commands.CheckReport(out, "cpub").show([
+            checks.CheckResult("tls", "fail", {"invalid": True, "source": PATH}),
+            checks.CheckResult("auth", "skip", {})])
+        self.assertEqual(status, 1)
+        self.assertIn("✗ CONFLUENCE_BASE_URL is not a valid URL\n"
+                      "  Fix: Use the form https://<your-site>.atlassian.net/wiki in "
                       f"{PATH}. Nothing was sent.", out.getvalue())
 
 

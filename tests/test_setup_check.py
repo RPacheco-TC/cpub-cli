@@ -206,6 +206,21 @@ class Check(unittest.TestCase):
         by, _ = run(present={"/opt/homebrew/bin/npx"})
         self.assertNotIn("insecure", by["tls"].facts)
 
+    def test_malformed_base_url_fails_tls_without_echoing_it(self):
+        """B9: credentials found (no base_url fact), tls invalid, auth skipped, zero calls."""
+        for url in ("http://[::1]%40evil.com/wiki", "http://[::1/wiki", "https://[::1/wiki",
+          "http://[evil.com]/wiki"):
+            env = {"CONFLUENCE_BASE_URL": url, "CONFLUENCE_EMAIL": "e@x",
+                   "CONFLUENCE_API_TOKEN": "secret-token"}
+            with self.subTest(url=url):
+                by, results = run(env=env, client=StubClient(AssertionError("request sent")))
+                self.assertEqual((by["credentials"].status, by["tls"].status,
+                                  by["auth"].status), (checks.OK, checks.FAIL, checks.SKIP))
+                self.assertEqual(by["tls"].facts, {"invalid": True, "source": "environment"})
+                self.assertNotIn("base_url", by["credentials"].facts)
+                self.assertNotIn("evil", repr(results))
+                self.assertTrue(checks.EnvironmentCheck.failed(results))
+
     def test_check_never_writes(self):
         f = FakeConfluence()
         run(client=f.client())

@@ -255,6 +255,9 @@ class CheckReport:
             return f"Connection to {base} (plain http to this computer: no TLS)", None
         if ok:
             return f"Connection to {base} (TLS certificate verified)", None
+        if f.get("invalid"):                       # B9: unparsable, never echoed
+            err = ErrorTranslator.invalid_base_url(f.get("source"))
+            return err.sentence.rstrip("."), err.fix
         if f.get("insecure"):                      # B8: nothing was sent
             scheme, _, host = str(f.get("base_url", "")).partition("://")
             err = ErrorTranslator.insecure_base_url(scheme, host, f.get("source"))

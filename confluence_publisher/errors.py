@@ -132,8 +132,11 @@ class InsecureBaseUrl(PublisherError):
     def allows(url) -> bool:
         """``https://``; or ``http://`` whose host is a loopback IP **literal**
         (127.0.0.0/8, ``[::1]``). The name ``localhost`` is refused: a hosts
-        file can point it anywhere."""
-        parts = urllib.parse.urlsplit(str(url))
+        file can point it anywhere. A URL that does not parse is not allowed."""
+        try:
+            parts = urllib.parse.urlsplit(str(url))
+        except ValueError:
+            return False
         if parts.scheme == "https":
             return True
         if parts.scheme != "http":
@@ -142,6 +145,23 @@ class InsecureBaseUrl(PublisherError):
             return ipaddress.ip_address(parts.hostname or "").is_loopback
         except ValueError:
             return False
+
+    @staticmethod
+    def check(url, sources=None):
+        """The one gate for a Confluence URL (B8, B9, D29); returns nothing.
+
+        :raises InvalidBaseUrl: if it does not parse, or has no host or a bad port.
+        :raises InsecureBaseUrl: if :meth:`allows` refuses it.
+        """
+        try:
+            parts = urllib.parse.urlsplit(str(url))
+            host, _ = parts.hostname, parts.port      # both may raise ValueError
+        except ValueError:
+            raise InvalidBaseUrl(sources) from None
+        if not host:
+            raise InvalidBaseUrl(sources)
+        if not InsecureBaseUrl.allows(url):
+            raise InsecureBaseUrl(url, sources)
 
     def __init__(self, url, sources=None):
         self.url = str(url)
@@ -157,6 +177,20 @@ class InsecureBaseUrl(PublisherError):
         found = f"{self.scheme}://{self.host}" if self.scheme else "no scheme"
         super().__init__(f"CONFLUENCE_BASE_URL must start with https:// (found {found}).")
         # .url is the raw value: it may hold a user:pass@ part, so print .host instead
+
+
+class InvalidBaseUrl(PublisherError):
+    """A Confluence URL that does not parse (e.g. ``http://[::1/wiki``), has no
+    host, or has a bad port (B9). Refused before any request.
+
+    Deliberately keeps **no** part of the value (it may hold ``user:pass@``):
+    only ``.source`` (where ``CONFLUENCE_BASE_URL`` came from, or ``None``)
+    and ``.sources``.
+    """
+    def __init__(self, sources=None):
+        self.sources = dict(sources or {})
+        self.source = self.sources.get("CONFLUENCE_BASE_URL")
+        super().__init__("CONFLUENCE_BASE_URL is not a valid URL.")
 
 
 class ConfigExists(PublisherError):
