@@ -13,8 +13,14 @@ from .errors import CliError
 from .cli_output import PlanPrinter, _plural, _need
 
 TOKEN_URL = "https://id.atlassian.com/manage-profile/security/api-tokens"
+KNOWN_ISSUES_URL = ("https://github.com/RPacheco-TC/obx-confluence-obsidian-publisher"
+                    "/blob/main/docs/KNOWN_ISSUES.md")
+#: The three credential lines, with placeholders only: an installed ``cpub`` has no
+#: ``.env.example`` to point at, and no real value is ever printed.
+CREDENTIAL_LINES = ("CONFLUENCE_BASE_URL=https://your-company.atlassian.net/wiki",
+                    "CONFLUENCE_EMAIL=you@your-company.com",
+                    "CONFLUENCE_API_TOKEN=<your API token>")
 _SPACE_BY_ID = re.compile(r"/api/v2/spaces/[^/?#]+(?:[?#]|$)")   # GET /spaces/{id}, not ?keys=
-CMD = "python3.12 confluence_publish.py"
 
 
 # --- friendly errors (S3.1) -----------------------------------------------------------
@@ -25,11 +31,14 @@ class ErrorTranslator:
     :param args: the parsed command line (``space``, ``parent``).
     :param credentials: the resolved :class:`~.config.Credentials`, once known
         (base URL and token source for messages, token for masking).
+    :param command: the command name for ``Fix:`` lines, decided once in
+        :mod:`.cli` from how the tool was started.
     """
 
-    def __init__(self, args, credentials=None):
+    def __init__(self, args, credentials=None, *, command):
         self.args = args
         self.credentials = credentials
+        self.command = command
 
     # credentials and local input
     @staticmethod
@@ -43,9 +52,10 @@ class ErrorTranslator:
         searched = ["environment variables"] + [str(p) for p in searched]
         return CliError(
             "Missing Confluence credential(s): " + ", ".join(missing) + ".",
-            "Add them as KEY=VALUE lines (see .env.example) to ./.env or "
-            "~/.config/confluence-publisher/.env, or export them.",
-            "Searched, in order:\n" + "\n".join(f"- {s}" for s in searched))
+            "Add them to ~/.config/confluence-publisher/.env (or ./.env), one KEY=VALUE per "
+            f"line as below, or export them; create a token at {TOKEN_URL}.",
+            "For example:\n" + "\n".join(f"  {line}" for line in CREDENTIAL_LINES)
+            + "\nSearched, in order:\n" + "\n".join(f"- {s}" for s in searched))
 
     # flag combinations (note vs folder)
     @staticmethod
@@ -69,17 +79,15 @@ class ErrorTranslator:
                         "Use --to PAGE to replace that page, or --under PAGE to create a "
                         "child page of it.")
 
-    @staticmethod
-    def note_without_target(path):
+    def note_without_target(self, path):
         return CliError("Say where this note goes: --to replaces a page, --under creates a "
                         "child page.",
-                        f"{CMD} {path} --to <page URL or id>   or   "
-                        f"{CMD} {path} --under <page URL or id>")
+                        f"{self.command} {path} --to <page URL or id>   or   "
+                        f"{self.command} {path} --under <page URL or id>")
 
-    @staticmethod
-    def folder_without_parent(path):
+    def folder_without_parent(self, path):
         return CliError("Say which page to publish this folder under.",
-                        f"{CMD} {path} --parent <page URL or id>   (--under works too)")
+                        f"{self.command} {path} --parent <page URL or id>   (--under works too)")
 
     @staticmethod
     def to_with_folder():
@@ -183,7 +191,7 @@ class ErrorTranslator:
             return CliError("Python could not verify Confluence's TLS certificate.",
                             "If you use the python.org build on macOS, run "
                             "'/Applications/Python 3.12/Install Certificates.command' once "
-                            "(never disable verification). See docs/KNOWN_ISSUES.md.", str(reason))
+                            f"(never disable verification). See {KNOWN_ISSUES_URL}", str(reason))
         return CliError(f"Could not reach Confluence at {base}.",
                         "Check CONFLUENCE_BASE_URL (it ends in /wiki) and your network or VPN.",
                         str(reason))

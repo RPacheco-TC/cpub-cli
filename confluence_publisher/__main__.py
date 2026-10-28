@@ -1,12 +1,14 @@
-"""``python3.12 -m confluence_publisher``: same command line as ``confluence_publish.py``."""
+"""``python3.12 -m confluence_publisher``: the same command as ``cpub``.
+
+Help and ``Fix:`` lines name it ``python3.12 -m confluence_publisher``:
+:class:`~.cli.CommandName` recognises ``.../confluence_publisher/__main__.py``
+in ``sys.argv[0]``.
+"""
 import sys
 
 from .cli import main
 
 if __name__ == "__main__":
-    # argparse names the program after argv[0], which is ".../__main__.py" under -m;
-    # keep usage and error lines identical to the confluence_publish.py entry point.
-    sys.argv[0] = "confluence_publish.py"
     try:
         main()
     finally:

@@ -9,15 +9,34 @@ There are two stages, and they are independent:
 
 The Markdown is the source of truth; Confluence is a derived view you can re-publish at any time.
 
-### Quick start: publish one note
+### Quick start: install `cpub`, publish one note
 
 ```bash
-cp .env.example .env && chmod 600 .env       # 1. fill in your site URL, email and API token
-python3.12 confluence_publish.py note.md --to https://your-company.atlassian.net/wiki/spaces/ENG/pages/123456789 --dry-run
-python3.12 confluence_publish.py note.md --to https://your-company.atlassian.net/wiki/spaces/ENG/pages/123456789
+uv tool install git+https://github.com/RPacheco-TC/obx-confluence-obsidian-publisher
 ```
 
-`--to` replaces that page's content (its title is kept); use `--under <page>` instead to create the note as a new child page. Paste the page URL straight from your browser — no space key or id needed. The first publish to a page you did not create with this tool asks you to confirm the hand-over once (see [Safety](#safety)).
+(or `pipx install git+https://github.com/RPacheco-TC/obx-confluence-obsidian-publisher`). That gives you the `cpub` command in any folder; `uv` also provides a suitable Python (3.12+) by itself. Then save your credentials once, for every repo and vault:
+
+```bash
+mkdir -p ~/.config/confluence-publisher
+cat > ~/.config/confluence-publisher/.env <<'EOF'
+CONFLUENCE_BASE_URL=https://your-company.atlassian.net/wiki
+CONFLUENCE_EMAIL=you@your-company.com
+CONFLUENCE_API_TOKEN=your-api-token
+EOF
+chmod 600 ~/.config/confluence-publisher/.env
+```
+
+and publish:
+
+```bash
+cpub note.md --to https://your-company.atlassian.net/wiki/spaces/ENG/pages/123456789 --dry-run
+cpub note.md --to https://your-company.atlassian.net/wiki/spaces/ENG/pages/123456789
+```
+
+Create the token at <https://id.atlassian.com/manage-profile/security/api-tokens>. `--to` replaces that page's content (its title is kept); use `--under <page>` instead to create the note as a new child page. Paste the page URL straight from your browser — no space key or id needed. The first publish to a page you did not create with this tool asks you to confirm the hand-over once (see [Safety](#safety)).
+
+Update later with `uv tool upgrade obx-confluence-obsidian-publisher` (or `pipx upgrade …`); `cpub --version` shows what you have. `confluence-publish` is the same command under a longer name. Working from a clone instead? `python3.12 confluence_publish.py …` and `python3.12 -m confluence_publisher …` behave exactly like `cpub …`.
 
 ---
 
@@ -25,7 +44,7 @@ python3.12 confluence_publish.py note.md --to https://your-company.atlassian.net
 
 | Tool | For | Notes |
 | ---- | --- | ----- |
-| **Python 3.12+** | Publishing | Standard library only; no `pip install` required. Check with `python3 --version`. macOS's built-in `python3` is 3.9 — install a newer one with `brew install python@3.12` and run the tool as `python3.12`. |
+| **`uv`** (or `pipx`) | Installing `cpub` | <https://docs.astral.sh/uv/>; `uv` brings its own Python 3.12+. Running from a clone instead needs **Python 3.12+** (standard library only, nothing to `pip install`); macOS's built-in `python3` is 3.9 — `brew install python@3.12` and run `python3.12`. |
 | **Node.js + `npx`** | Diagrams | Used to render Mermaid diagrams to PNG (`@mermaid-js/mermaid-cli`, fetched on first use). Optional — without it, diagrams fall back to a code block. |
 | **Claude Code** | Generating | Only needed for stage 1. See [`docs/GUIDE.md`](docs/GUIDE.md). |
 | **Obsidian** | Reading/editing | The generated docs use Obsidian wikilinks and Mermaid. Free from <https://obsidian.md>. |
@@ -40,7 +59,8 @@ python3.12 confluence_publish.py note.md --to https://your-company.atlassian.net
 | `template.yaml` | The doc-set spec the generator follows (universal sections + per-repo "In Situ" deep-dives, adapted to the repo's archetype). |
 | `docs/GUIDE.md` | Step-by-step walkthrough: generate docs with your own Claude, then publish them. |
 | `docs/KNOWN_ISSUES.md` | Known limitations, their causes and workarounds. |
-| `confluence_publish.py` | The publisher's entry point (stage 2): `python3.12 confluence_publish.py …`. A thin wrapper around the package below. |
+| `pyproject.toml` | Packaging (no dependencies): `uv tool install` / `pipx install` give the `cpub` and `confluence-publish` commands. |
+| `confluence_publish.py` | Entry point when running from a clone: `python3.12 confluence_publish.py …`. A thin wrapper around the package below. |
 | `confluence_publisher/` | The publisher itself, standard library only: command line, credentials, Confluence REST client, the safety plan, and the Markdown → Confluence conversion. Also runs as `python3.12 -m confluence_publisher …`. |
 | `tests/` | Offline test suite (`python3.12 -B -m unittest discover -s tests`). |
 | `.env.example` | Template for the three credentials (copy to `.env`). |
@@ -67,7 +87,17 @@ Review and edit the Markdown before publishing. It is the source of truth.
 
 ## Stage 2 — Publish to Confluence
 
+### 0. Install `cpub`
+
+```bash
+uv tool install git+https://github.com/RPacheco-TC/obx-confluence-obsidian-publisher
+```
+
+(or `pipx install git+https://github.com/RPacheco-TC/obx-confluence-obsidian-publisher`). The examples below use `cpub`; from a clone of this repo, `python3.12 confluence_publish.py` works exactly the same.
+
 ### 1. Set your credentials
+
+With `cpub` installed, put the three values in `~/.config/confluence-publisher/.env` (see the [quick start](#quick-start-install-cpub-publish-one-note)) so every folder can publish. In a clone you can also use a local `.env`:
 
 ```bash
 cp .env.example .env      # then edit .env with your base URL, email, and token
@@ -122,10 +152,10 @@ Your Obsidian `[[wikilinks]]` keep working both ways: the files keep their origi
 
 ```bash
 # See exactly what would happen — writes nothing:
-python3.12 confluence_publish.py my-repo-docs --parent 123456789 --prefix langflow --dry-run
+cpub my-repo-docs --parent 123456789 --prefix langflow --dry-run
 
 # Publish for real:
-python3.12 confluence_publish.py my-repo-docs --parent 123456789 --prefix langflow
+cpub my-repo-docs --parent 123456789 --prefix langflow
 ```
 
 (`--under` works the same as `--parent` for a folder, and the v1.1 form with `--space DOCS` still works.)
@@ -142,11 +172,11 @@ Point the command at one `.md` file instead of a folder, and say where it goes:
 
 ```bash
 # Replace the content of an existing page (its title, place and space stay the same):
-python3.12 confluence_publish.py "My Note.md" --to <page URL or id> --dry-run
-python3.12 confluence_publish.py "My Note.md" --to <page URL or id>
+cpub "My Note.md" --to <page URL or id> --dry-run
+cpub "My Note.md" --to <page URL or id>
 
 # Create the note as a new child page (re-running updates that same page):
-python3.12 confluence_publish.py "My Note.md" --under <page URL or id>
+cpub "My Note.md" --under <page URL or id>
 ```
 
 - **`--to`** replaces exactly that page. Before writing it shows a **replace preview** — the page title, space, current version, when it was last edited, and the old and new size — and `--dry-run` stops there. The page keeps its title unless you pass `--title "New title"`. The version comment reads `Published from Obsidian: <filename>`. After the write it prints the page link and the page-history link, where the previous version can be restored.

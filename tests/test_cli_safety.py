@@ -205,7 +205,7 @@ class Parser(unittest.TestCase):
         self.assertTrue(args.dry_run)
 
     def test_help_leads_with_note_and_folder_examples_and_names_the_real_command(self):
-        text = cp.build_parser().format_help()
+        text = cp.build_parser("python3.12 confluence_publish.py").format_help()
         self.assertIn("examples:\n  python3.12 confluence_publish.py note.md --to ", text)
         self.assertIn("  python3.12 confluence_publish.py note.md --under ", text)
         self.assertIn("  python3.12 confluence_publish.py docs/ --parent ", text)
@@ -225,6 +225,21 @@ class Credentials(unittest.TestCase):
         self.assertIn("/home/u/proj/.env", msg)
         self.assertIn("/home/u/.config/confluence-publisher/.env", msg)
         self.assertIn("environment variables", msg)
+
+    def test_missing_shows_the_three_lines_inline_and_no_real_value(self):
+        env = {"CONFLUENCE_BASE_URL": "https://real-site.example/wiki",
+               "CONFLUENCE_EMAIL": "real.person@real-site.example"}
+        msg, _ = run(Fake([], environ=env))
+        assert_friendly(self, msg)
+        for line in ("CONFLUENCE_BASE_URL=https://your-company.atlassian.net/wiki",
+                     "CONFLUENCE_EMAIL=you@your-company.com",
+                     "CONFLUENCE_API_TOKEN=<your API token>"):
+            self.assertIn(f"  {line}", msg)
+        self.assertIn("~/.config/confluence-publisher/.env", msg.splitlines()[1])
+        self.assertIn("https://id.atlassian.com/manage-profile/security/api-tokens", msg)
+        self.assertNotIn(".env.example", msg)
+        self.assertNotIn("real-site", msg)
+        self.assertNotIn("real.person", msg)
 
     def test_values_from_files_are_applied(self):
         text = "".join(f"{k}={v}\n" for k, v in CREDS.items())

@@ -15,11 +15,15 @@ FILES = {"note.md", "Notes/Deep Note.MD", "picture.png"}
 DIRS = {"docs"}
 
 
+SHIM = "python3.12 confluence_publish.py"
+
+
 def resolve(*argv):
-    """Parse ``argv`` and resolve the mode against the fake file system."""
-    args = cp.build_parser().parse_args(list(argv))
+    """Parse ``argv`` and resolve the mode against the fake file system; the
+    ``Fix:`` lines name the clone's shim command."""
+    args = cp.build_parser(SHIM).parse_args(list(argv))
     resolver = cp.ModeResolver(is_file=FILES.__contains__, is_dir=DIRS.__contains__)
-    return resolver.resolve(args)
+    return resolver.resolve(args, cp.ErrorTranslator(args, command=SHIM))
 
 
 class NoteMode(unittest.TestCase):

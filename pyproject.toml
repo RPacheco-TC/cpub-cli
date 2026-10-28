@@ -1,0 +1,31 @@
+[build-system]
+# 77+: SPDX license expression and license-files (PEP 639)
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "obx-confluence-obsidian-publisher"
+description = "Publish Obsidian-style Markdown notes and doc sets to Confluence Cloud."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = []
+dynamic = ["version"]
+authors = [{ name = "Ronny Pacheco" }]
+keywords = ["confluence", "obsidian", "markdown", "documentation"]
+
+[project.urls]
+Homepage = "https://github.com/RPacheco-TC/obx-confluence-obsidian-publisher"
+
+[project.scripts]
+cpub = "confluence_publisher.cli:main"
+confluence-publish = "confluence_publisher.cli:main"
+
+[tool.setuptools]
+# Only the package: tests, docs and the clone-only shim stay out of the wheel.
+packages = ["confluence_publisher"]
+
+[tool.setuptools.dynamic]
+# Single version source (D27); read statically, without importing the package.
+version = { attr = "confluence_publisher.__version__" }

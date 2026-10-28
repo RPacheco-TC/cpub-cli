@@ -14,6 +14,12 @@ The Markdown is the source of truth; Confluence is a derived, re-publishable vie
 ## Commands
 
 ```bash
+# Install the command (zero dependencies; uv brings Python 3.12+); or use pipx
+uv tool install git+https://github.com/RPacheco-TC/obx-confluence-obsidian-publisher
+cpub --version                       # cpub 1.3.0; `confluence-publish` is the same command
+# From a clone, these are equivalent to `cpub …`:
+#   python3.12 confluence_publish.py …      python3.12 -m confluence_publisher …
+
 # Credentials (never committed); the CLI loads them itself — no `set -a` needed
 cp .env.example .env       # then edit: CONFLUENCE_BASE_URL (ends in /wiki), CONFLUENCE_EMAIL, CONFLUENCE_API_TOKEN
 chmod 600 .env
@@ -43,7 +49,8 @@ python3.12 confluence_publish.py NOTE.md --under PAGE_URL_OR_ID [--title T]
 - `--img-width PX` (optional) sets `ac:width` on every Mermaid `ac:image`; unset means no attribute, i.e. unchanged output.
 - `--max-updates N` (default 25) caps how many *existing* pages one run may UPDATE; creates don't count.
 - `--adopt` hands over every page listed for hand-over, for this run only, without the typed prompt (non-interactive runs). There is deliberately **no `--yes`** — do not add one (decision D4).
-- Every example and message names the command `python3.12 confluence_publish.py`. There is no `cpub` command or `setup` subcommand yet; do not mention them in output or docs.
+- **The command name follows how the tool was started (D26)**: `cpub` / `confluence-publish` (console scripts), `python3.12 confluence_publish.py` (the shim), `python3.12 -m confluence_publisher` (`-m`). `CommandName.resolve(sys.argv[0])` in `cli.py` decides it **once** and `main()` injects it into `ArgumentParserFactory` (usage, examples, `--version`) and `ErrorTranslator` (every `Fix:` line); no command string is hard-coded anywhere else (a test checks). There is no `setup` / `check` subcommand yet; do not mention them.
+- **Packaging:** `pyproject.toml` (setuptools, `requires-python >= 3.12`, **no dependencies**, the `confluence_publisher` package only — no tests, docs or shim in the wheel). The version has one source, `confluence_publisher.__version__` (D27); scripts `cpub` and `confluence-publish` → `confluence_publisher.cli:main`.
 
 ```bash
 # Regression tests — stdlib unittest, in-process and offline (no network, no npx,
@@ -58,12 +65,13 @@ There is **no build, no linter, and no dependency install** — pure Python 3.12
 The package is **class-based with constructor injection** (decision D24): behaviour and state live in classes whose dependencies are passed to the constructor; module level holds only constants, compiled regexes and short stateless private helpers. Nothing reads `os.environ` except `CredentialLoader` and `AppDirs`, and there is no module-level mutable state.
 
 ```
-confluence_publish.py   thin entry shim: from confluence_publisher.cli import main (importing the package runs the guard)
+pyproject.toml          packaging: scripts cpub / confluence-publish -> confluence_publisher.cli:main
+confluence_publish.py   thin entry shim for clones: from confluence_publisher.cli import main
 confluence_publisher/
   __init__.py      Python >= 3.12 guard (3.9-parseable) + __version__
-  __main__.py      python3.12 -m confluence_publisher (same usage/error lines as the shim)
-  cli.py           PublishCommand (the ONE composition root), ArgumentParserFactory,
-                   ModeResolver -> RunMode (note vs folder, flag checks); main()/build_parser()
+  __main__.py      python3.12 -m confluence_publisher (names itself so in help and Fix lines)
+  cli.py           PublishCommand (the ONE composition root), CommandName (how it was started),
+                   ArgumentParserFactory (+ --version), ModeResolver -> RunMode; main()
   cli_output.py    PlanPrinter (table, ownership, replace preview, footers), HandoverPrompt
   cli_errors.py    ErrorTranslator (every expected failure -> CliError sentence + Fix:)
   errors.py        PublisherError base: CliError, MissingCredentials, SpaceNotFound, NotAFolder,

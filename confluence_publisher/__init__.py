@@ -9,7 +9,7 @@ are evaluated at definition time and would fail before the guard could run.
 """
 import sys
 
-__version__ = "1.2.0.dev0"
+__version__ = "1.3.0"
 
 MIN_PYTHON = (3, 12)
 

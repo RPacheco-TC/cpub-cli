@@ -10,7 +10,11 @@ Usage
 -----
 .. code-block:: console
 
-    python3.12 confluence_publish.py DOCS_DIR --space KEY --parent PAGE_ID [--prefix P] [--dry-run]
+    cpub NOTE.md --to PAGE | --under PAGE      # installed (uv tool / pipx)
+    cpub DOCS_DIR --parent PAGE [--prefix P]   # also: python3.12 confluence_publish.py …
+
+The command name shown in help and ``Fix:`` lines follows how the tool was
+started (:class:`CommandName`).
 
 ``DOCS_DIR``
     folder of ``NN - Title.md`` files, with an optional ``In Situ/`` subfolder.
@@ -70,18 +74,19 @@ from .pageref import PageRef
 from .plan import Planner, DEFAULT_MAX_UPDATES
 from .executor import PlanExecutor
 from .cli_output import PlanPrinter, HandoverPrompt
-from .cli_errors import ErrorTranslator, CMD
+from .cli_errors import ErrorTranslator, CREDENTIAL_LINES, TOKEN_URL
+from . import __version__
 
 
 
-_HELP_INTRO = f"""\
+_HELP_INTRO = """\
 Publish Markdown to Confluence Cloud: one note to one page, or a folder of
 docs as a page tree. A page can be given as its id or its URL.
 
 examples:
-  {CMD} note.md --to https://acme.atlassian.net/wiki/spaces/ENG/pages/123456789 --dry-run
-  {CMD} note.md --under 123456789
-  {CMD} docs/ --parent 123456789 --prefix myrepo --dry-run
+  {cmd} note.md --to https://acme.atlassian.net/wiki/spaces/ENG/pages/123456789 --dry-run
+  {cmd} note.md --under 123456789
+  {cmd} docs/ --parent 123456789 --prefix myrepo --dry-run
 
   note.md --to PAGE     replace that page's content (its title is kept)
   note.md --under PAGE  create a child page of PAGE (re-running updates it)
@@ -99,7 +104,9 @@ credentials (first hit wins, per variable):
   2. --env-file PATH
   3. ./.env in the current folder
   4. ~/.config/confluence-publisher/.env  ($XDG_CONFIG_HOME is honoured)
-  Files use KEY=VALUE lines, as in .env.example. Keep them chmod 600.
+  Each file holds KEY=VALUE lines; keep it chmod 600:
+""" + "".join(f"    {line}\n" for line in CREDENTIAL_LINES) + f"""\
+  Create the API token at {TOKEN_URL}
 """
 
 
@@ -114,6 +121,36 @@ def _int_at_least(minimum, message):
             raise argparse.ArgumentTypeError(f"{message}, got {value!r}")
         return n
     return parse
+
+
+# --- the command name (D26) ------------------------------------------------------
+
+class CommandName:
+    """The command to show in usage, examples and ``Fix:`` lines: how the tool was started.
+
+    ``cpub`` / ``confluence-publish`` (installed console scripts) show themselves;
+    the clone's shim shows ``python3.12 confluence_publish.py``; ``-m`` shows
+    ``python3.12 -m confluence_publisher``. Anything else falls back to ``cpub``.
+    """
+    SCRIPTS = ("cpub", "confluence-publish")
+    SHIM = "python3.12 confluence_publish.py"
+    MODULE = "python3.12 -m confluence_publisher"
+    FALLBACK = "cpub"
+
+    @classmethod
+    def resolve(cls, argv0):
+        """:param argv0: ``sys.argv[0]`` as the interpreter set it.
+        :rtype: str"""
+        path = pathlib.PurePath(str(argv0 or ""))
+        name = path.name.lower()
+        stem = name[:-4] if name.endswith(".exe") else name     # Windows launchers
+        if stem in cls.SCRIPTS:
+            return stem
+        if name == "confluence_publish.py":
+            return cls.SHIM
+        if name == "__main__.py" and path.parent.name == "confluence_publisher":
+            return cls.MODULE
+        return cls.FALLBACK
 
 
 # --- argument parsing -------------------------------------------------------------
@@ -145,11 +182,12 @@ class ModeResolver:
         self.is_file = is_file or (lambda p: pathlib.Path(p).is_file())
         self.is_dir = is_dir or (lambda p: pathlib.Path(p).is_dir())
 
-    def resolve(self, args):
+    def resolve(self, args, errors=None):
         """:rtype: RunMode
         :raises CliError: for a missing path, a non-Markdown file, or flags
             that do not fit the mode."""
-        path, err = args.path, ErrorTranslator
+        path = args.path
+        err = errors or ErrorTranslator(args, command=CommandName.FALLBACK)
         if args.parent and args.under and args.parent != args.under:
             raise err.parent_and_under()
         if self.is_dir(path):
@@ -174,13 +212,20 @@ class ModeResolver:
 
 
 class ArgumentParserFactory:
-    """Builds the ``argparse`` parser: every flag, its help text and validation."""
+    """Builds the ``argparse`` parser: every flag, its help text and validation.
+
+    :param command: the command name to show (see :class:`CommandName`).
+    """
+
+    def __init__(self, command):
+        self.command = command
 
     def build(self):
         """:rtype: argparse.ArgumentParser"""
         ap = argparse.ArgumentParser(
-            description=_HELP_INTRO, epilog=_HELP_CREDS,
-            formatter_class=argparse.RawDescriptionHelpFormatter)
+            prog=self.command, description=_HELP_INTRO.format(cmd=self.command),
+            epilog=_HELP_CREDS, formatter_class=argparse.RawDescriptionHelpFormatter)
+        ap.add_argument("--version", action="version", version=f"{self.command} {__version__}")
         ap.add_argument("path", metavar="PATH",
                         help='a Markdown note (.md file), or a folder of "NN - Title.md" docs '
                              '(optional "In Situ/" subfolder)')
@@ -244,12 +289,13 @@ class PublishCommand:
     :param note_loader: ``(path, title) -> SingleNote``; raises
         :class:`~.errors.NotAMarkdownFile`.
     :param app_dirs: an :class:`~.config.AppDirs` (the note-mode image cache folder).
+    :param command: the command name for ``Fix:`` lines (see :class:`CommandName`).
     """
 
     def __init__(self, args, *, out, credential_loader, client_factory, docset_loader,
                  planner_factory, executor_factory, prompt, mode_resolver=None,
-                 note_loader=None, app_dirs=None):
-        self.args, self.out = args, out
+                 note_loader=None, app_dirs=None, command=CommandName.FALLBACK):
+        self.args, self.out, self.command = args, out, command
         self.mode_resolver = mode_resolver or ModeResolver()
         self.note_loader = note_loader or (lambda path, title: SingleNote.from_file(path, title))
         self.app_dirs = app_dirs or AppDirs()
@@ -260,7 +306,7 @@ class PublishCommand:
         self.executor_factory = executor_factory
         self.prompt = prompt
         self.printer = PlanPrinter(out)
-        self.errors = ErrorTranslator(args)
+        self.errors = ErrorTranslator(args, command=command)
 
     @classmethod
     def from_args(cls, args, out=None, **overrides):
@@ -310,7 +356,7 @@ class PublishCommand:
             raise ErrorTranslator.env_file_missing(e.filename or a.env_file) from None
         except MissingCredentials as e:
             raise ErrorTranslator.missing_credentials(e.missing, e.searched) from None
-        self.errors = ErrorTranslator(a, credentials)
+        self.errors = ErrorTranslator(a, credentials, command=self.command)
         return credentials
 
     def _docset(self):
@@ -362,7 +408,7 @@ class PublishCommand:
         return f"{credentials.base_url}/pages/viewpage.action?pageId={page_id}"
 
     def _run(self):
-        mode = self.mode_resolver.resolve(self.args)       # local checks, before any I/O
+        mode = self.mode_resolver.resolve(self.args, self.errors)   # local, before any I/O
         credentials = self._credentials()
         page_id = self._page_id(mode.page, credentials)
         # --to/--under/--parent all resolve to one page id; a note's diagrams go to the cache
@@ -371,7 +417,7 @@ class PublishCommand:
             img_dir = str(self.app_dirs.note_img_dir)
         self.args = argparse.Namespace(**{**vars(self.args), "parent": page_id,
                                           "img_dir": img_dir})
-        self.errors = ErrorTranslator(self.args, credentials)
+        self.errors = ErrorTranslator(self.args, credentials, command=self.command)
         source = self._docset() if mode.kind == "set" else self._note(mode)
         client = self.client_factory(credentials)
         plan = self._plan(client, source, mode)
@@ -440,17 +486,22 @@ class PublishCommand:
 
 # --- entry points ------------------------------------------------------------------------
 
-def build_parser():
-    """The command-line parser (kept for tests and the v1.x API)."""
-    return ArgumentParserFactory().build()
+def build_parser(command=None):
+    """The command-line parser; ``command`` defaults to how the tool was started."""
+    return ArgumentParserFactory(command or CommandName.resolve(sys.argv[0])).build()
 
 
 def main(argv=None, out=None):
-    """Parse ``argv`` and run :class:`PublishCommand` with the real collaborators.
+    """Entry point of ``cpub``, ``confluence-publish``, the shim and ``-m``.
+
+    Decides the command name once (:class:`CommandName`), then parses ``argv``
+    and runs :class:`PublishCommand` with the real collaborators.
 
     :raises SystemExit: on any expected failure (exit status 1) or bad arguments (2).
     """
-    PublishCommand.from_args(build_parser().parse_args(argv), out).run()
+    command = CommandName.resolve(sys.argv[0])
+    args = build_parser(command).parse_args(argv)
+    PublishCommand.from_args(args, out, command=command).run()
 
 
 if __name__ == "__main__":

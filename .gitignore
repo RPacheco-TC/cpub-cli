@@ -14,3 +14,8 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# Packaging (pyproject.toml builds)
+build/
+dist/
+*.egg-info/

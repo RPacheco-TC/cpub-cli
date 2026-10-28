@@ -162,12 +162,18 @@ my-repo-docs/
 Once you have reviewed the generated docs, you can publish them to Confluence Cloud as a page tree. This stage is separate from generation: you can publish, edit the Markdown later, and re-publish, as often as you like. (To publish **one note** instead of a whole folder, see [Publish a single note](#publish-a-single-note) below.)
 
 ### What you need to publish
-- **Python 3.12+** (no extra packages to install). On macOS the built-in `python3` is 3.9: `brew install python@3.12` and run `python3.12`.
+- **The `cpub` command.** Install it once with [`uv`](https://docs.astral.sh/uv/) (it brings a suitable Python by itself):
+
+  ```bash
+  uv tool install git+https://github.com/RPacheco-TC/obx-confluence-obsidian-publisher
+  ```
+
+  or with `pipx install git+https://github.com/RPacheco-TC/obx-confluence-obsidian-publisher`. Check it with `cpub --version`; update later with `uv tool upgrade obx-confluence-obsidian-publisher`. (Prefer not to install? From a clone of this repo, `python3.12 confluence_publish.py` does exactly the same; it needs **Python 3.12+** — on macOS the built-in `python3` is 3.9, so `brew install python@3.12`.)
 - **Node.js / `npx`** — only if your docs contain Mermaid diagrams, which get rendered to images. Optional otherwise.
 - A **Confluence Cloud account** and an **API token** — create one at <https://id.atlassian.com/manage-profile/security/api-tokens>.
 
 ### Step 1 — Set your credentials
-Copy `.env.example` to `.env` and fill in your values. The publisher reads it by itself, so there is nothing to load into your shell:
+With `cpub` installed, the simplest is one user-wide file, `~/.config/confluence-publisher/.env` (see the tip below), so every folder can publish. In a clone you can also copy `.env.example` to `.env` and fill in your values. The publisher reads it by itself, so there is nothing to load into your shell:
 
 ```bash
 cp .env.example .env       # edit .env: base URL, email, API token
@@ -221,10 +227,10 @@ Notes:
 ### Step 4 — Dry-run, then publish
 ```bash
 # Preview the plan — writes nothing:
-python3.12 confluence_publish.py "/path/to/my-repo-docs" --parent "<parent page URL>" --prefix langflow --dry-run
+cpub "/path/to/my-repo-docs" --parent "<parent page URL>" --prefix langflow --dry-run
 
 # Publish for real:
-python3.12 confluence_publish.py "/path/to/my-repo-docs" --parent "<parent page URL>" --prefix langflow
+cpub "/path/to/my-repo-docs" --parent "<parent page URL>" --prefix langflow
 ```
 
 Quote the URL so your shell doesn't trip over `?` or `&` in it. You will see a per-page `CREATE` / `UPDATE` plan (showing the actual prefixed titles), how many diagrams each page carries, and who owns the pages it would update. After a real publish it ends with a link to the parent page. Re-running updates the same pages in place (matched by title, below the parent only), so it is safe to run again after editing the Markdown. The dry-run runs exactly the same checks as the real publish.
@@ -259,8 +265,8 @@ You can also publish **one Obsidian note** to Confluence, without a doc set. Poi
 
 | You want to… | Command |
 | --- | --- |
-| Replace the content of an existing page | `python3.12 confluence_publish.py "My Note.md" --to "<page URL>"` |
-| Create the note as a new child page | `python3.12 confluence_publish.py "My Note.md" --under "<parent page URL>"` |
+| Replace the content of an existing page | `cpub "My Note.md" --to "<page URL>"` |
+| Create the note as a new child page | `cpub "My Note.md" --under "<parent page URL>"` |
 
 Add `--dry-run` to see what would happen without writing anything. The credentials are the same as in Step 1, and `--space` is not needed: it is taken from the page.
 
@@ -298,4 +304,4 @@ Type the number to go ahead; anything else writes nothing. From then on the page
 
 ## In one sentence
 
-**Generate:** install Claude Code and Obsidian, copy `template.yaml` next to your repo, paste the generation prompt into Claude Code with your two paths filled in, and review the result in Obsidian. **Publish:** set your three Confluence credentials in `.env` (or `~/.config/confluence-publisher/.env`), then run `python3.12 confluence_publish.py <docs-folder> --parent <page URL> --prefix <repo-name>` for a doc set, or `python3.12 confluence_publish.py <note.md> --to <page URL>` for one note (try `--dry-run` first; the `--prefix` keeps each repo's titles unique in a shared space).
+**Generate:** install Claude Code and Obsidian, copy `template.yaml` next to your repo, paste the generation prompt into Claude Code with your two paths filled in, and review the result in Obsidian. **Publish:** set your three Confluence credentials in `.env` (or `~/.config/confluence-publisher/.env`), install `cpub` and run `cpub <docs-folder> --parent <page URL> --prefix <repo-name>` for a doc set, or `cpub <note.md> --to <page URL>` for one note (try `--dry-run` first; the `--prefix` keeps each repo's titles unique in a shared space).
