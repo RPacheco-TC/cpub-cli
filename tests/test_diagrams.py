@@ -10,6 +10,7 @@ import types
 import unittest
 
 from _support import config, docset, errors, markdown_html, plan, storage
+from _support import mermaid as mmd
 from _fake_confluence import FakeConfluence
 
 MD = "# Doc\n\n```mermaid\ngraph TD\n  A --> B\n```\n\ntext\n\n```mermaid\ngraph LR\n  C\n```\n"
@@ -18,7 +19,7 @@ NO_IMG = "/nonexistent/cpub-test-img"         # never created: no render is atte
 
 def converter(npx=None):
     """A converter whose Mermaid renderer has (or lacks) npx; no img_dir, no disk."""
-    mermaid = markdown_html.MermaidRenderer(NO_IMG, npx=npx, runner=FailRunner())
+    mermaid = mmd.MermaidRenderer(NO_IMG, npx=npx, runner=FailRunner())
     return storage.StorageConverter(renderer=markdown_html.MarkdownRenderer(mermaid))
 
 
@@ -80,14 +81,14 @@ class FindExecutable(unittest.TestCase):
 class Renderer(unittest.TestCase):
     def test_without_npx_nothing_is_tried_and_the_skip_is_counted(self):
         runner = FailRunner()
-        m = markdown_html.MermaidRenderer(NO_IMG, npx=None, runner=runner)
+        m = mmd.MermaidRenderer(NO_IMG, npx=None, runner=runner)
         self.assertIsNone(m.render("graph TD\n A"))
         self.assertEqual((m.skipped, runner.calls), (1, []))
         self.assertFalse(pathlib.Path(NO_IMG).exists())
 
     def test_found_npx_is_run_by_its_path_with_its_environment(self):
         env = {"PATH": "/opt/homebrew/bin:/usr/bin"}
-        m = markdown_html.MermaidRenderer(NO_IMG, npx=("/opt/homebrew/bin/npx", env))
+        m = mmd.MermaidRenderer(NO_IMG, npx=("/opt/homebrew/bin/npx", env))
         argv, got = m._command("/t/a.mmd", "/i/a.png")
         self.assertEqual(argv, ["/opt/homebrew/bin/npx", "-y", "-p", "@mermaid-js/mermaid-cli",
                                 "mmdc", "-i", "/t/a.mmd", "-o", "/i/a.png",
@@ -95,7 +96,7 @@ class Renderer(unittest.TestCase):
         self.assertIs(got, env)
 
     def test_default_is_npx_on_path_as_before(self):
-        argv, env = markdown_html.MermaidRenderer(NO_IMG)._command("a.mmd", "a.png")
+        argv, env = mmd.MermaidRenderer(NO_IMG)._command("a.mmd", "a.png")
         self.assertEqual((argv[0], env), ("npx", None))
 
 

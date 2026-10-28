@@ -1,21 +1,12 @@
 """Generic Markdown -> HTML, used by :mod:`.storage`.
 
 :class:`MarkdownRenderer` turns Obsidian-style Markdown into HTML (inline
-formatting, tables, lists, callouts, code); :class:`MermaidRenderer` renders
-Mermaid blocks to PNG via ``npx @mermaid-js/mermaid-cli``. No module state:
-the image folder lives on the renderer instance, not in globals.
-
-:requires: Python 3.12+, and ``npx`` on ``PATH`` for Mermaid rendering (optional;
-    falls back to a styled block when unavailable).
+formatting, tables, lists, callouts, code). Mermaid blocks go to the injected
+:class:`~.mermaid.MermaidRenderer` (PNG via ``npx``), or become a styled block.
+No module state: the image folder lives on that renderer, not in globals.
 """
 
 import re
-import os
-import subprocess
-import sys
-import tempfile
-import hashlib
-from pathlib import Path
 
 
 # --------------------------------------------------------------------------- #
@@ -99,82 +90,13 @@ def escape_html(text: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-#  Mermaid rendering
-# --------------------------------------------------------------------------- #
-
-class MermaidRenderer:
-    """Render Mermaid diagrams to content-hash-named PNGs with ``npx mmdc``.
-
-    :param img_dir: directory the PNGs are written to (and cached in).
-    :param img_rel: path prefix used in the emitted ``<img src>``.
-    :param runner: ``subprocess.run``-compatible callable (injectable for tests).
-    :param npx: ``(command, child_env)`` from ``AppDirs.find_executable``, or
-        ``None`` when npx was not found (then nothing is tried and :attr:`skipped`
-        counts the diagrams left unrendered). Default: ``npx`` on ``PATH``.
-    """
-
-    def __init__(self, img_dir, img_rel: str = "img", runner=subprocess.run,
-                 npx=("npx", None)):
-        self.img_dir, self.img_rel, self.runner, self.npx = Path(img_dir), img_rel, runner, npx
-        self.skipped = 0
-
-    def render(self, mermaid_code: str) -> str | None:
-        """Render Mermaid code to a PNG via ``mmdc``.
-
-        The PNG is named by a hash of the diagram source and cached in ``img_dir``
-        (an existing file is reused, not re-rendered).
-
-        :param mermaid_code: the Mermaid diagram source.
-        :type mermaid_code: str
-        :returns: an ``<img>`` tag string, or ``None`` if rendering failed.
-        :rtype: str | None
-        """
-        img_dir, img_rel = self.img_dir, self.img_rel
-        digest = hashlib.md5(mermaid_code.encode()).hexdigest()[:10]
-        filename = f"mermaid_{digest}.png"
-        out_path = img_dir / filename
-
-        if out_path.exists():
-            return f'<img src="{img_rel}/{filename}" alt="Mermaid diagram" />'
-        if self.npx is None:
-            self.skipped += 1
-            return None
-
-        img_dir.mkdir(parents=True, exist_ok=True)
-
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.mmd', delete=False) as f:
-            f.write(mermaid_code)
-            tmp_mmd = f.name
-
-        try:
-            argv, env = self._command(tmp_mmd, out_path)
-            result = self.runner(argv, capture_output=True, text=True, timeout=30, env=env)
-            if result.returncode == 0 and out_path.exists():
-                return f'<img src="{img_rel}/{filename}" alt="Mermaid diagram" />'
-            else:
-                print(f"    WARNING: mmdc failed: {result.stderr[:200]}")
-                return None
-        except Exception as e:
-            print(f"    WARNING: mmdc error: {e}")
-            return None
-        finally:
-            os.unlink(tmp_mmd)
-
-    def _command(self, mmd_path, out_path):
-        """The ``mmdc`` command line and the environment to run it with."""
-        return ([self.npx[0], '-y', '-p', '@mermaid-js/mermaid-cli', 'mmdc',
-                 '-i', str(mmd_path), '-o', str(out_path), '-b', 'white', '-s', '2', '-q'],
-                self.npx[1])
-
-
-# --------------------------------------------------------------------------- #
 #  Markdown -> HTML
 # --------------------------------------------------------------------------- #
 
 class MarkdownRenderer:
     """Convert Obsidian-style Markdown to a generic HTML fragment.
 
-    Holds no global state: the optional :class:`MermaidRenderer` passed to the
+    Holds no global state: the optional :class:`~.mermaid.MermaidRenderer` passed to the
     constructor decides whether Mermaid blocks become PNG ``<img>`` tags or the
     styled fallback block. A renderer without one never touches the disk.
 
@@ -189,7 +111,7 @@ class MarkdownRenderer:
 
         Handles headings, paragraphs, lists, tables, blockquotes, Obsidian callouts,
         fenced code, and Mermaid blocks. When the renderer has a
-        :class:`MermaidRenderer`, Mermaid blocks are rendered to PNG; otherwise they
+        :class:`~.mermaid.MermaidRenderer`, Mermaid blocks are rendered to PNG; otherwise they
         fall back to a styled block.
 
         :param md_text: the Markdown document.

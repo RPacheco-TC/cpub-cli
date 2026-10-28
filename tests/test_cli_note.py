@@ -14,6 +14,7 @@ import types
 import unittest
 
 from _support import cli, config, docset, markdown_html, plan, storage
+from _support import mermaid as mmd
 from _fake_confluence import FakeConfluence, BASE
 
 TOKEN = "s3cr3t-token-value"
@@ -248,8 +249,8 @@ class DiagramsWithoutNpx(NoteRun):
 
     def setUp(self):
         super().setUp()
-        mermaid = markdown_html.MermaidRenderer("/nonexistent/cpub-img", npx=None,
-                                                runner=NoRunner())
+        mermaid = mmd.MermaidRenderer("/nonexistent/cpub-img", npx=None,
+                                      runner=NoRunner())
         self.converter = storage.StorageConverter(
             renderer=markdown_html.MarkdownRenderer(mermaid))
 

@@ -12,7 +12,8 @@ import dataclasses
 import html as ihtml
 import xml.etree.ElementTree as ET
 
-from .markdown_html import MarkdownRenderer, MermaidRenderer, strip_frontmatter
+from .markdown_html import MarkdownRenderer, strip_frontmatter
+from .mermaid import MermaidRenderer
 
 
 # Obsidian callout type -> Confluence macro (info=blue, note=yellow, tip=green, warning=red)
@@ -313,10 +314,10 @@ class StorageConverter:
         (``ac:width``); ``None`` leaves the images at their natural size.
     :param renderer: the body renderer; by default a
         :class:`~.markdown_html.MarkdownRenderer` with a
-        :class:`~.markdown_html.MermaidRenderer` on ``img_dir`` (none when
+        :class:`~.mermaid.MermaidRenderer` on ``img_dir`` (none when
         ``img_dir`` is ``None``).
     :param npx: ``(command, child_env)`` or ``None`` (not found), for that
-        default :class:`~.markdown_html.MermaidRenderer`.
+        default :class:`~.mermaid.MermaidRenderer`.
     """
 
     def __init__(self, prefix: str = "", img_dir=None, img_width=None, renderer=None,

@@ -306,7 +306,7 @@ class Refusals(unittest.TestCase):
 
     def test_refusal_raised_inside_execute_plan_is_friendly(self):
         def execute(plan, **k):
-            raise cp.PlanRefused(self.REFUSALS)
+            raise errors.PlanRefused(self.REFUSALS)
         msg, _ = run(Fake([item("p - 01 - A")], execute=execute))
         assert_friendly(self, msg)
         self.assertIn("(2 problems)", msg)
@@ -325,7 +325,7 @@ class Handover(unittest.TestCase):
     def test_non_tty_without_adopt_refuses_and_lists_pages(self):
         def execute(plan, **k):
             self.assertIsNone(k["confirm"])
-            raise cp.HandoverRequired([i for i in plan.items if i.managed in ("none", "other")])
+            raise errors.HandoverRequired([i for i in plan.items if i.managed in ("none", "other")])
         msg, _ = run(Fake(self.ITEMS, execute=execute, tty=False))
         assert_friendly(self, msg)
         self.assertIn("2 pages need a one-time hand-over", msg)
@@ -347,7 +347,7 @@ class Handover(unittest.TestCase):
         def execute(plan, **k):
             items = [i for i in plan.items if i.managed in ("none", "other")]
             if not k["confirm"](items):
-                raise cp.HandoverDeclined(items)
+                raise errors.HandoverDeclined(items)
             return types.SimpleNamespace(written=[], pending=[], marker_failures=[], error=None)
 
         for answer, ok in (("2", True), (" 2 ", True), ("y", False), ("yes", False),
@@ -438,7 +438,7 @@ class FriendlyErrors(unittest.TestCase):
         items = [item("p - 01 - A"), item("p - 02 - B")]
 
         def execute(plan, **k):
-            raise cp.PlanExecutionError(types.SimpleNamespace(
+            raise errors.PlanExecutionError(types.SimpleNamespace(
                 written=[(items[0], "1")], pending=items[1:], partial=None, marker_failures=[],
                 error=http_error(409, "Conflict", "version mismatch")))
         msg, _ = run(Fake(items, execute=execute))
@@ -529,7 +529,7 @@ class FriendlyErrors(unittest.TestCase):
             report = types.SimpleNamespace(
                 written=[(items[0], "1")], pending=items[1:], marker_failures=[],
                 error=urllib.error.URLError("Connection reset"))
-            raise cp.PlanExecutionError(report)
+            raise errors.PlanExecutionError(report)
         msg, _ = run(Fake(items, execute=execute))
         assert_friendly(self, msg)
         self.assertIn("safe to re-run", msg)

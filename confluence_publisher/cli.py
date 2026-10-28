@@ -65,20 +65,18 @@ import argparse
 import dataclasses
 import urllib.error
 
-from .errors import (CliError, MissingCredentials, SpaceNotFound, NotAFolder, PlanRefused,
-                     HandoverRequired, HandoverDeclined, PlanExecutionError, BadPageRef,
-                     NotAMarkdownFile, DiagramsUnrenderable, InsecureBaseUrl)
+from .errors import NotAMarkdownFile
 from .config import CredentialLoader, AppDirs, CredentialWriter
 from .checks import EnvironmentCheck
 from .api import ConfluenceClient, HttpTransport
 from .storage import StorageConverter
-from .docset import DocSet, SingleNote, TO_KEY, UNDER_KEY
-from .pageref import PageRef
+from .docset import DocSet, SingleNote
 from .plan import Planner, DEFAULT_MAX_UPDATES
 from .executor import PlanExecutor
-from .cli_output import PlanPrinter, HandoverPrompt
+from .cli_output import HandoverPrompt
 from .cli_errors import ErrorTranslator, CREDENTIAL_LINES, TOKEN_URL
 from .cli_commands import SetupCommand, CheckReport, CheckCommand
+from .cli_publish import PublishFlow
 from . import __version__
 
 
@@ -297,45 +295,11 @@ class ArgumentParserFactory:
         return ap
 
 
-# --- the command ------------------------------------------------------------------------
+# --- the publish command: PublishFlow plus its composition -------------------------------
 
-class PublishCommand:
-    """One publish run: credentials → identity → doc set → plan → check → write.
-
-    Every collaborator is injected; :meth:`from_args` is the composition root
-    that builds the real ones. Tests pass fakes to the constructor instead.
-
-    :param args: the parsed command line.
-    :param out: stream for normal output.
-    :param credential_loader: ``.load(env_file) -> Credentials`` (a
-        :class:`~.config.CredentialLoader`).
-    :param client_factory: ``credentials -> ConfluenceClient``.
-    :param docset_loader: ``path -> DocSet``; raises :class:`~.errors.NotAFolder`.
-    :param planner_factory: ``(client, args) -> Planner``.
-    :param executor_factory: ``client -> PlanExecutor``.
-    :param prompt: a :class:`HandoverPrompt`.
-    :param mode_resolver: a :class:`ModeResolver` (note vs folder, flag checks).
-    :param note_loader: ``(path, title) -> SingleNote``; raises
-        :class:`~.errors.NotAMarkdownFile`.
-    :param app_dirs: an :class:`~.config.AppDirs` (the note-mode image cache folder).
-    :param command: the command name for ``Fix:`` lines (see :class:`CommandName`).
-    """
-
-    def __init__(self, args, *, out, credential_loader, client_factory, docset_loader,
-                 planner_factory, executor_factory, prompt, mode_resolver=None,
-                 note_loader=None, app_dirs=None, command=CommandName.FALLBACK):
-        self.args, self.out, self.command = args, out, command
-        self.mode_resolver = mode_resolver or ModeResolver()
-        self.note_loader = note_loader or (lambda path, title: SingleNote.from_file(path, title))
-        self.app_dirs = app_dirs or AppDirs()
-        self.credential_loader = credential_loader
-        self.client_factory = client_factory
-        self.docset_loader = docset_loader
-        self.planner_factory = planner_factory
-        self.executor_factory = executor_factory
-        self.prompt = prompt
-        self.printer = PlanPrinter(out)
-        self.errors = ErrorTranslator(args, command=command)
+class PublishCommand(PublishFlow):
+    """:class:`~.cli_publish.PublishFlow` plus :meth:`from_args`, which wires the real
+    collaborators, so this module stays the package's one composition root."""
 
     @classmethod
     def from_args(cls, args, out=None, **overrides):
@@ -347,6 +311,9 @@ class PublishCommand:
         out = out or sys.stdout
         app_dirs = overrides.get("app_dirs") or AppDirs()
         wiring = dict(
+            mode_resolver=ModeResolver(),
+            note_loader=lambda path, title: SingleNote.from_file(path, title),
+            command=CommandName.FALLBACK,
             credential_loader=CredentialLoader(),
             client_factory=lambda creds: ConfluenceClient(creds, HttpTransport()),
             docset_loader=DocSet.from_folder,
@@ -366,181 +333,6 @@ class PublishCommand:
         with a bare PATH)."""
         img_dir = args.img_dir or str(pathlib.Path(args.path) / ".img")
         return Planner(client, StorageConverter(args.prefix, img_dir, args.img_width, npx=npx))
-
-    def run(self):
-        """Run once; expected failures exit with one sentence and a ``Fix:`` line.
-
-        :raises SystemExit: on any expected failure (exit status 1).
-        """
-        try:
-            self._run()
-        except CliError as e:
-            raise SystemExit(self.errors.mask(str(e))) from None
-        except urllib.error.HTTPError as e:
-            raise SystemExit(self.errors.mask(str(self.errors.http(e)))) from None
-        except urllib.error.URLError as e:
-            raise SystemExit(self.errors.mask(str(self.errors.url(e)))) from None
-        except InsecureBaseUrl as e:                # the transport's own check (B8)
-            err = ErrorTranslator.insecure_base_url(e.scheme, e.host, e.source)
-            raise SystemExit(self.errors.mask(str(err))) from None
-
-    # -- steps --
-
-    def _credentials(self):
-        a = self.args
-        try:
-            credentials = self.credential_loader.load(a.env_file)
-        except FileNotFoundError as e:
-            raise ErrorTranslator.env_file_missing(e.filename or a.env_file) from None
-        except MissingCredentials as e:
-            raise self.errors.missing_credentials(e.missing, e.searched) from None
-        except InsecureBaseUrl as e:               # B8: refused before any client exists
-            raise ErrorTranslator.insecure_base_url(e.scheme, e.host, e.source) from None
-        self.errors = ErrorTranslator(a, credentials, command=self.command)
-        return credentials
-
-    def _docset(self):
-        try:
-            docs = self.docset_loader(self.args.path)
-        except NotAFolder:
-            raise self.errors.not_a_folder() from None
-        dupes = docs.duplicate_titles()
-        if dupes:
-            raise ErrorTranslator.duplicate_titles(dupes)
-        return docs
-
-    def _note(self, mode):
-        try:
-            return self.note_loader(mode.path, self.args.title)
-        except NotAMarkdownFile:
-            raise ErrorTranslator.not_markdown(mode.path) from None
-
-    def _page_id(self, text, credentials):
-        """A page id from an id or a page URL (pure; no network)."""
-        try:
-            return PageRef.parse(text, credentials.base_url).page_id
-        except BadPageRef as e:
-            raise ErrorTranslator.bad_page_ref(e) from None
-
-    def _plan(self, client, source, mode):
-        a, stage = self.args, "space"
-        try:
-            me = client.whoami()
-            if not me.get("authenticated"):
-                raise self.errors.unauthenticated(me)
-            space_id = None
-            if a.space:
-                try:
-                    space_id = client.resolve_space_id(a.space)
-                except SpaceNotFound:
-                    raise self.errors.no_space() from None
-            stage = "parent"
-            planner = self.planner_factory(client, a)
-            if mode.replace:
-                return planner.build_replace(source, a.parent, space_id)
-            return planner.build(source, space_id, a.parent)
-        except urllib.error.HTTPError as e:
-            raise self.errors.read(e, stage) from None
-        except DiagramsUnrenderable as e:          # a note never trades diagrams for code
-            raise ErrorTranslator.diagrams_not_renderable(e.note) from None
-
-    def _page_link(self, webui, page_id, credentials):
-        if webui:
-            return webui if webui.startswith("http") else credentials.base_url + webui
-        return f"{credentials.base_url}/pages/viewpage.action?pageId={page_id}"
-
-    def _run(self):
-        mode = self.mode_resolver.resolve(self.args, self.errors)   # local, before any I/O
-        credentials = self._credentials()
-        page_id = self._page_id(mode.page, credentials)
-        # --to/--under/--parent all resolve to one page id; a note's diagrams go to the cache
-        img_dir = self.args.img_dir
-        if mode.kind == "note" and not img_dir:
-            img_dir = str(self.app_dirs.note_img_dir)
-        self.args = argparse.Namespace(**{**vars(self.args), "parent": page_id,
-                                          "img_dir": img_dir})
-        self.errors = ErrorTranslator(self.args, credentials, command=self.command)
-        source = self._docset() if mode.kind == "set" else self._note(mode)
-        client = self.client_factory(credentials)
-        plan = self._plan(client, source, mode)
-        self._show_and_write(plan, mode, client, credentials, source)
-
-    def _space_label(self, plan):
-        info = getattr(plan, "space_info", None) or {}
-        return self.args.space or info.get("key") or f"id {plan.space_id}"
-
-    def _frontmatter_line(self, mode, note, credentials):
-        """The ``key: value`` line equivalent to this run's flag, if the note has no key yet.
-
-        It mirrors the flag that was used (``--to`` -> ``confluence:``, ``--under`` ->
-        ``confluence_parent:``) with the page as a by-id URL, which never contains a
-        ``#`` that YAML would read as a comment.
-        """
-        targets = note.targets()
-        if mode.from_frontmatter or targets.get("to") or targets.get("under"):
-            return None                            # the note already names a target
-        key = TO_KEY if mode.replace else UNDER_KEY
-        return f"{key}: {self._page_link(None, self.args.parent, credentials)}"
-
-    def _show_and_write(self, plan, mode, client, credentials, source=None):
-        a, p = self.args, self.printer
-        refusals = plan.refusals(a.max_updates)
-        note = mode.kind == "note"
-        parent_link = self._page_link((plan.parent_info or {}).get("webui"), a.parent, credentials)
-        p.unrendered_warning([it.title for it in plan.unrendered_items()])   # set mode only
-
-        if a.dry_run or refusals:
-            p.table(plan.items)
-            if note and not refusals:                 # never preview what will be refused
-                p.preview(plan.items[0], self._space_label(plan))
-            p.ownership(plan, refusals)
-            if refusals:
-                raise ErrorTranslator.refused(refusals)
-            if plan.handover_items():
-                p.handover_hint(len(plan.handover_items()))
-            if note:
-                it = plan.items[0]
-                link = (self._page_link(it.webui, it.page_id, credentials) if it.page_id
-                        else parent_link)
-                p.note_footer("DRY-RUN (nothing written)", self._space_label(plan), link)
-            else:
-                p.footer(len(plan.items), "DRY-RUN (nothing written)", a, parent_link,
-                     self._space_label(plan))
-            return
-
-        if note:
-            p.preview(plan.items[0], self._space_label(plan))
-        confirm = None
-        if not a.adopt and self.prompt.is_interactive():
-            confirm = self.prompt.confirm
-        try:
-            report = self.executor_factory(client).execute(
-                plan, max_updates=a.max_updates, adopt=a.adopt, confirm=confirm)
-        except PlanRefused as e:                       # re-checked inside the executor
-            raise ErrorTranslator.refused(e.refusals) from None
-        except HandoverRequired as e:
-            raise ErrorTranslator.handover_required(e.items) from None
-        except HandoverDeclined as e:
-            raise self.errors.handover_declined(e.items) from None
-        except PlanExecutionError as e:
-            raise self.errors.partial(e.report) from None
-
-        p.table(plan.items)
-        if a.adopt and plan.handover_items():
-            p.ownership(plan, adopted=True)
-        p.marker_warnings(report)
-        if note:
-            first = plan.items[0]
-            it, pid = report.written[0] if report.written else (first, first.page_id)
-            p.note_footer("published", self._space_label(plan),
-                          self._page_link(None, pid, credentials),   # by id: title may change
-                          history=f"{credentials.base_url}/pages/viewpreviousversions.action"
-                                  f"?pageId={pid}")
-            line = self._frontmatter_line(mode, source, credentials)
-            if line:
-                p.frontmatter_hint(line)
-        else:
-            p.footer(len(plan.items), "published", a, parent_link, self._space_label(plan))
 
 
 # --- setup and check (reserved first words, D2) -----------------------------------------

@@ -73,8 +73,11 @@ confluence_publish.py   thin entry shim for clones: from confluence_publisher.cl
 confluence_publisher/
   __init__.py      Python >= 3.12 guard (3.9-parseable) + __version__
   __main__.py      python3.12 -m confluence_publisher (names itself so in help and Fix lines)
-  cli.py           PublishCommand (the ONE composition root), CommandName (how it was started),
+  cli.py           the ONE composition root: PublishCommand.from_args (wires PublishFlow),
+                   build_subcommand (setup/check); CommandName (how it was started),
                    ArgumentParserFactory (+ --version), ModeResolver -> RunMode; main()
+  cli_publish.py   PublishFlow: the publish run (credentials -> whoami -> source -> plan ->
+                   refusals -> write) with injected collaborators; builds none of them
   cli_output.py    PlanPrinter (table, ownership, replace preview, footers), HandoverPrompt
   cli_errors.py    ErrorTranslator (every expected failure -> CliError sentence + Fix:)
   cli_commands.py  the reserved-word commands: SetupCommand (cpub setup: prompts, whoami
@@ -99,7 +102,9 @@ confluence_publisher/
   executor.py      PlanExecutor(client).execute(...) — the ONLY writer; RunReport
   storage.py       FenceAwareExtractor (the one fence rule) -> TocExtractor, WikilinkExtractor,
                    CalloutExtractor; StorageConverter.convert(md) -> StorageDocument (.validate())
-  markdown_html.py MarkdownRenderer (.render(md), .inline(text)), MermaidRenderer(img_dir) (npx)
+  markdown_html.py MarkdownRenderer (.render(md), .inline(text)); vanilla HTML only
+  mermaid.py       MermaidRenderer(img_dir, npx=...) (npx mmdc -> content-hash PNGs);
+                   stdlib only, no package imports
 docs/              GUIDE.md, KNOWN_ISSUES.md
 template.yaml      Stage 1 contract (stays at the root)
 ```
@@ -107,16 +112,18 @@ template.yaml      Stage 1 contract (stays at the root)
 **Dependency rule (no cycles; QA checks the imports):**
 
 ```
-markdown_html  <-  storage  <-  plan  <-  executor  <-  cli
+markdown_html, mermaid  <-  storage  <-  plan  <-  executor  <-  cli
 cli_output <- cli_errors <- cli (output/error wording never imports api, plan or config;
                                   cli_errors reads only docset's frontmatter key names)
 cli_output, cli_errors, config, checks, api <- cli_commands <- cli (never the other way round)
+cli_output, cli_errors, docset, pageref, errors <- cli_publish <- cli (cli_publish never imports cli)
 docset <- plan; plan reads only constants from api; cli imports every module (composition root)
 errors: imports nothing; config, api, docset import only errors
-storage, markdown_html: never import api — conversion stays pure and offline
+storage, markdown_html, mermaid: never import api — conversion stays pure and offline;
+mermaid imports no package module (storage wires it into MarkdownRenderer)
 ```
 
-One responsibility per module, none over ~650 lines (markdown_html 641, api 390, storage 373, cli 321, plan 230, config 202, cli_errors 195, cli_output 150, executor 124, docset 121, errors 91). Lines stay at 100 characters or fewer.
+One responsibility per module, none over ~650 lines (markdown_html 570, cli 413, api 413, storage 381, config 374, plan 365, cli_commands 312, cli_errors 310, cli_publish 233, docset 219, cli_output 200, errors 199, checks 161, executor 124, pageref 84, mermaid 78). Lines stay at 100 characters or fewer.
 
 **Composition.** `PublishCommand.from_args(args, out, **overrides)` is the only place that builds the real objects: `CredentialLoader().load()` → `ConfluenceClient(creds, HttpTransport())` → `DocSet.from_folder()` → `Planner(client, StorageConverter(prefix, img_dir, img_width)).build(...)` → `plan.refusals()` → `PlanExecutor(client).execute(...)`. No other module constructs a `ConfluenceClient`.
 
