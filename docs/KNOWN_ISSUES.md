@@ -388,9 +388,9 @@ user's click-through, 2026-10-28). It is outside this repository.
 
 ### Fix
 
-Publishing from Obsidian now uses our own plugin, **Confluence Publisher**
-(https://github.com/RPacheco-TC/confluence-publisher-obsidian; release 0.1.0): it runs `cpub` with no shell and no credentials of its
-own. See
+Publishing from Obsidian now uses our own plugin, **cpub for Confluence**
+(https://github.com/RPacheco-TC/confluence-publisher-obsidian, plugin id `cpub`): it runs `cpub` with no
+shell and no credentials of its own. See
 [Publish the current note from Obsidian](GUIDE.md#publish-the-current-note-from-obsidian).
 `cpub` itself did not change.
 
