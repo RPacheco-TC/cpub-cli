@@ -334,9 +334,11 @@ From then on `cpub "My Note.md"` with no flag publishes the note to that page. U
 
 ## Publish the current note from Obsidian
 
-With the target in the frontmatter, one hotkey can publish the note you are looking at. This uses the **Shell commands** community plugin; nothing is installed into the vault besides the plugin.
+With the target in the frontmatter, one command (or one hotkey) publishes the note you are looking at. This uses **Confluence Publisher**, our own Obsidian plugin (desktop only). It runs `cpub` for you: it never reads, stores or sends your Confluence credentials and makes no network request itself.
 
-1. **Publish the note once from a terminal**, so its page is marked as published from that note:
+1. **Install `cpub` 1.4.0 or newer** and save your credentials (`cpub setup`), as above. Keep them in `~/.config/confluence-publisher/.env`: Obsidian runs `cpub` from the vault folder, so a `./.env` in your project folder is not found from there.
+
+2. **Publish the note once from a terminal**, so its page is marked as published from that note:
 
    ```bash
    cpub "/path/to/vault/My Note.md" --to "<page URL>"
@@ -344,30 +346,27 @@ With the target in the frontmatter, one hotkey can publish the note you are look
 
    Type the page count when asked (the hand-over), then paste the `confluence:` line it prints into the note's frontmatter.
 
-2. **Find the full path of `cpub`**. Obsidian does not start commands with your terminal's `PATH`, so a bare `cpub` is usually "command not found". `cpub check` prints it on its last line:
+3. **Install the plugin.** Once it is listed in Obsidian's community store: **Settings → Community plugins → Browse**, search for **Confluence Publisher**, install and enable it. Until then, copy its `manifest.json`, `main.js` and `styles.css` into `<vault>/.obsidian/plugins/confluence-publisher/` and enable it under **Settings → Community plugins**.
 
-   ```
-   ✓ cpub is /Users/<you>/.local/bin/cpub  (use this full path in the Obsidian hotkey)
-   ```
+4. Run **Check cpub setup** from the command palette. The plugin finds `cpub` by itself in `~/.local/bin` (uv, pipx), `/opt/homebrew/bin` or `/usr/local/bin`; if yours is elsewhere, set **cpub path** in the plugin's settings (`cpub check` in a terminal prints the full path). If `cpub` is missing or older than 1.4.0, the plugin says so and shows the install line.
 
-   (`which cpub` gives the same path; with uv or pipx it is `/Users/<you>/.local/bin/cpub`.)
+5. Optional: **Settings → Hotkeys**, search for **Confluence Publisher** and bind a key to **Publish current note to Confluence**.
 
-3. In Obsidian: **Settings → Community plugins → Browse**, install and enable **Shell commands**.
-4. In its settings, **New shell command**, and enter the full path from step 2 followed by the note variable (no quotes; the plugin escapes the path itself):
+The plugin adds three commands (and a ribbon button for Publish, which you can turn off):
 
-   ```
-   /Users/<you>/.local/bin/cpub {{file_path:absolute}}
-   ```
+| Command | Runs |
+|---|---|
+| Publish current note to Confluence | `cpub <note>` |
+| Preview publish (dry run) | `cpub <note> --dry-run` |
+| Check cpub setup | `cpub check` |
 
-5. Under that command's **Output**, show **stdout** and **stderr** in a notification, so you see the result and any `Error:` / `Fix:` lines.
-6. **Settings → Hotkeys**, search for the command and bind a key.
+It saves the note first, then shows the result as a notice: the page link on success, or `cpub`'s `Error:` and `Fix:` lines; **Show full output** opens everything `cpub` printed. A run that takes longer than the timeout (setting, 120 seconds by default) is stopped and reported.
 
-Press the key in any note that has a `confluence:` (or `confluence_parent:`) line: it publishes that note to its page.
+- **The plugin never takes a page over.** It never passes `--adopt`: nobody can type the confirmation from inside Obsidian, so a page that this tool did not publish from this note is refused, with nothing written. It can only update pages you already handed over in step 2. If you see the hand-over error, run the command from a terminal once.
+- **Diagrams need `npx`** (Node.js). The plugin adds `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin` to the `PATH` it gives `cpub`, and `cpub` also looks for `npx` in the last two. If Node.js is installed elsewhere (nvm, for example), start Obsidian from a terminal where `npx` works, or install Node.js with Homebrew. If no `npx` is found, a note with Mermaid diagrams is **refused** rather than published with its diagrams turned into code: `Error: Diagrams in My Note.md cannot be rendered (npx not found).`
+- **Undo is not in the plugin**: `cpub undo` always asks for a typed confirmation, so run it from a terminal.
 
-- **The hotkey never takes a page over.** There is no `--adopt` in the command, on purpose: from a hotkey nobody can type the confirmation, so a page that this tool did not publish from this note is refused, with nothing written. It can only update pages you already handed over in step 1. If you see the hand-over error, run the command from a terminal once.
-- **Diagrams need `npx`** (Node.js). The command looks for it on `PATH`, then in `/opt/homebrew/bin` and `/usr/local/bin`. If Node.js is installed elsewhere (nvm, for example), add its folder to `PATH` in the Shell commands plugin settings (its **Environments** tab can extend `PATH`). If no `npx` is found, a note with Mermaid diagrams is **refused** rather than published with its diagrams turned into code: `Error: Diagrams in My Note.md cannot be rendered (npx not found).`
-- **Credentials**: keep them in `~/.config/confluence-publisher/.env`. Obsidian runs the command from the vault folder, so a `./.env` in your project folder is not found from there.
-- To see what would happen first, make a second command with `--dry-run` at the end.
+The *Shell commands* plugin recipe that this guide described before no longer works with current Obsidian; see [KNOWN_ISSUES](KNOWN_ISSUES.md#the-shell-commands-plugin-does-not-open-its-settings-on-obsidian-114).
 
 ## Undo a publish
 
@@ -392,7 +391,7 @@ Restore 1 page to the version before the run? Type the number 1 to confirm:
 - A page someone edited after your publish is **left alone** and listed with its history link; restore it there by hand if you need to.
 - Pages the run **created** are only listed: undo never deletes anything.
 - `cpub undo --list` shows the last 10 runs; `cpub undo --run <id>` undoes an older one. A run can be undone once.
-- Undo always asks, so it does not run from the Obsidian hotkey: use a terminal.
+- Undo always asks, so it does not run from the Obsidian plugin: use a terminal.
 
 ---
 

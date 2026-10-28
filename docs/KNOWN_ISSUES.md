@@ -364,3 +364,36 @@ v1.4 on.
 ### TODO
 
 - [ ] A `--delete-created` opt-in, only if users ask for it (never by default).
+
+---
+
+## The Shell commands plugin does not open its settings on Obsidian 1.14
+
+### Symptom
+
+The one-key recipe of v1.4's first draft used the community plugin *Shell commands*
+(0.23.0). On Obsidian 1.14.5 its settings tab does not open; the developer console
+shows:
+
+```
+No tab content was found with activate_tab_id 'SC-tab-main-shell-commands'
+```
+
+so the `cpub {{file_path:absolute}}` command cannot be created.
+
+### Root cause
+
+An incompatibility between Shell commands 0.23.0 and Obsidian 1.14 (found in the
+user's click-through, 2026-10-28). It is outside this repository.
+
+### Fix
+
+Publishing from Obsidian now uses our own plugin, **Confluence Publisher**
+(separate repository, `confluence-publisher-obsidian`): it runs `cpub` with no
+shell and no credentials of its own. See
+[Publish the current note from Obsidian](GUIDE.md#publish-the-current-note-from-obsidian).
+`cpub` itself did not change.
+
+### TODO
+
+- [ ] Link the plugin's public repository and store page once they exist.
