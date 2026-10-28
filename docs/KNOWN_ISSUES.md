@@ -147,7 +147,7 @@ XML tags; the `<ac:link>` markup produced a mismatched-tag error that failed
 First encountered with a RabbitMQ document that had a `[[wikilink]]` example
 inside a code fence.
 
-### Fix — merged in [PR #1](https://github.com/RPacheco-TC/confluence-obsidian-publisher/pull/1) (2026-07-01)
+### Fix — merged in [PR #1](https://github.com/RPacheco-TC/cpub-cli/pull/1) (2026-07-01)
 
 `_extract_wikilinks` in `confluence_publish.py` now iterates line-by-line,
 tracking an `in_fence` boolean that flips on/off at each ` ``` ` boundary. Lines

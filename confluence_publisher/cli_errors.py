@@ -15,7 +15,7 @@ from .docset import TO_KEY as FRONTMATTER_TO, UNDER_KEY as FRONTMATTER_UNDER
 from .cli_output import PlanPrinter, _plural, _need
 
 TOKEN_URL = "https://id.atlassian.com/manage-profile/security/api-tokens"
-KNOWN_ISSUES_URL = ("https://github.com/RPacheco-TC/confluence-obsidian-publisher"
+KNOWN_ISSUES_URL = ("https://github.com/RPacheco-TC/cpub-cli"
                     "/blob/main/docs/KNOWN_ISSUES.md")
 #: The three credential lines, with placeholders only: an installed ``cpub`` has no
 #: ``.env.example`` to point at, and no real value is ever printed.
