@@ -75,16 +75,18 @@ class OutsideFencesStillConverts(NoTokenLeakMixin, unittest.TestCase):
         self.assertIn('ri:content-title="REPO - 01 - Foo"', html)
         self.assertNoTokens(html)
 
-    def test_wikilink_anchor_dropped_from_target_and_text(self):
+    def test_wikilink_anchor_kept_and_dropped_from_text(self):
+        """H3: the heading becomes Confluence's anchor; the text stays the page name."""
         html = storage("See [[03 - Edge Cases#Code fences]].\n", prefix="REPO")
-        self.assertIn('ri:content-title="REPO - 03 - Edge Cases"', html)
+        self.assertIn('<ac:link ac:anchor="Code-fences">'
+                      '<ri:page ri:content-title="REPO - 03 - Edge Cases" />', html)
         self.assertIn("<![CDATA[03 - Edge Cases]]>", html)
         self.assertNotIn("Code fences", html)
 
     def test_wikilink_alias_wins_over_anchor(self):
         html = storage("See [[03 - Edge Cases#Code fences|the fences]].\n", prefix="REPO")
         self.assertIn("<![CDATA[the fences]]>", html)
-        self.assertNotIn("Code fences", html)
+        self.assertIn('ac:anchor="Code-fences"', html)
 
     def test_plain_blockquote_untouched(self):
         # Edge case 6: a normal quote is not a callout.

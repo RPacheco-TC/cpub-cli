@@ -12,6 +12,7 @@ import dataclasses
 import html as ihtml
 import xml.etree.ElementTree as ET
 
+from .anchors import WIKILINK_RE as _WIKILINK_RE, HeadingAnchors
 from .markdown_html import MarkdownRenderer, outside_code, strip_frontmatter
 from .mermaid import MermaidRenderer
 
@@ -30,7 +31,6 @@ CALLOUT_MACRO = {
 
 _CALLOUT_RE = re.compile(r"^>\s*\[!(\w+)\][+-]?\s*(.*)$")
 _TOC_RE = re.compile(r"^\s*\[\[?TOC\]?\]\s*$", re.IGNORECASE)
-_WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 _IMG_RE = re.compile(r'<img src="img/([^"]+)"[^>]*/>')
 _VALIDATE_WRAP = ('<root xmlns:ac="urn:ac" xmlns:ri="urn:ri">{}</root>')
 _TOC_MACRO = ('<ac:structured-macro ac:name="toc" ac:schema-version="1">'
@@ -112,17 +112,21 @@ def _cdata(text: str) -> str:
     return "<![CDATA[" + text.replace("]]>", "]]]]><![CDATA[>") + "]]>"
 
 
-def _wikilink_macro(target_title: str, display: str) -> str:
-    """Build a Confluence ``ac:link`` that points at a page by title.
+def _wikilink_macro(target_title, display: str, anchor=None) -> str:
+    """Build a Confluence ``ac:link`` that points at a page by title, or at a heading.
 
-    :param target_title: the exact title of the target page.
-    :type target_title: str
+    :param target_title: the exact title of the target page; ``None`` for a
+        heading of the same page (no ``ri:page``).
     :param display: the link text to show.
-    :type display: str
+    :param anchor: Confluence's heading id (:func:`~.anchors.heading_anchor`, D36), or
+        ``None`` for a page link (byte-identical to v1.1).
     :returns: the ``ac:link`` storage-format markup.
     :rtype: str
     """
-    return (f'<ac:link><ri:page ri:content-title="{_xml_text(target_title, attr=True)}" />'
+    head = "<ac:link>" if anchor is None else f'<ac:link ac:anchor="{_xml_text(anchor, True)}">'
+    page = ("" if target_title is None else
+            f'<ri:page ri:content-title="{_xml_text(target_title, attr=True)}" />')
+    return (f"{head}{page}"
             f"<ac:plain-text-link-body>{_cdata(display)}</ac:plain-text-link-body></ac:link>")
 
 
@@ -133,17 +137,32 @@ class Wikilink:
     :param target: the (prefixed) title of the page it points at.
     :param display: the text shown (alias, else the target without its anchor).
     :param name: the title that was looked up, for messages: the prefixed
-        target without its anchor (the display text for an anchor-only
-        ``[[#Heading]]``).
+        target without its anchor (``#Heading`` for a same-note link).
+    :param anchor: the Confluence heading id it jumps to (H3, D36), or ``None``.
+    :param same_note: a ``[[#Heading]]`` link: no page, only the anchor.
+    :param missing: a same-note link whose heading the note does not have.
     """
     target: str
     display: str
     name: str = ""
+    anchor: str | None = None
+    same_note: bool = False
+    missing: bool = False
 
     @property
     def macro(self) -> str:
-        """The ``ac:link`` it becomes when the page exists (byte-identical to v1.1)."""
-        return _wikilink_macro(self.target, self.display)
+        """The ``ac:link`` it becomes; without an anchor byte-identical to v1.1."""
+        if self.same_note and self.anchor is None:     # [[#^block]]: nothing to jump to
+            return self.text
+        return _wikilink_macro(None if self.same_note else self.target, self.display,
+                               self.anchor)
+
+    def resolved(self, exists) -> bool:
+        """Whether it stays a link: ``exists`` (``title -> bool``, note mode) is asked
+        about its page; a same-note link needs its heading. ``None`` keeps it (set mode)."""
+        if exists is None:
+            return True
+        return not self.missing if self.same_note else exists(self.target)
 
     @property
     def text(self) -> str:
@@ -156,8 +175,7 @@ def _restore_links(html, links, exists=None):
     to plain text when ``exists`` says its page is missing (S2.5). ``exists=None``
     links everything, as v1.1 does."""
     for token, link in links.items():
-        keep = exists is None or exists(link.target)
-        html = html.replace(token, link.macro if keep else link.text)
+        html = html.replace(token, link.macro if link.resolved(exists) else link.text)
     return html
 
 
@@ -246,16 +264,14 @@ class TocExtractor(FenceAwareExtractor):
 class WikilinkExtractor(FenceAwareExtractor):
     """Replace ``[[wikilinks]]`` with tokens and build their Confluence links.
 
-    Handles ``[[Target]]``, ``[[Target#Anchor]]`` and ``[[Target|alias]]``.
-    Links are page-level: the link points at a page *by title*, and the published
-    page title is the prefixed title (see :func:`prefixed_title`). So the link
-    target must be prefixed too — otherwise a link written in Obsidian as
-    ``[[01 - Foo]]`` would point at a non-existent page ``01 - Foo`` instead of
-    the published ``<prefix> - 01 - Foo``. The *display* text is left unprefixed,
-    so readers still see the natural name. The ``#anchor`` is dropped for now —
-    Confluence heading anchors use a different scheme — so the link still lands
-    on the right page; it is dropped from the display text too, so the link
-    does not advertise a heading it will not jump to (an alias wins over both).
+    Handles ``[[Target]]``, ``[[Target#Heading]]``, ``[[#Heading]]`` and
+    ``[[Target|alias]]``. A page is linked *by title*, and the published title is
+    the prefixed one (:func:`prefixed_title`), so the target is prefixed too; the
+    display text is not. A heading keeps its anchor (H3, D36): Confluence's own
+    heading id, from the note's real heading when it is known
+    (:class:`HeadingAnchors`), else from the link text. ``[[P#A#B]]`` names
+    heading ``B``; a block reference ``[[P#^id]]`` stays a page link.
+    ``[[P#H]]`` shows ``P`` and ``[[#H]]`` shows ``H`` (an alias wins over both).
 
     Wikilinks inside fenced code blocks are intentionally left untouched. They
     are source code examples, not document navigation, and converting them to
@@ -270,7 +286,9 @@ class WikilinkExtractor(FenceAwareExtractor):
     def __init__(self, prefix: str = ""):
         self.prefix = prefix
 
-    def extract(self, md: str):
+    def extract(self, md: str, own=None, others=None):
+        """:param own: the note's :class:`HeadingAnchors` (``None``: none known).
+        :param others: ``bare title -> HeadingAnchors | None`` (set mode)."""
         links = {}
 
         def repl(m):
@@ -278,13 +296,20 @@ class WikilinkExtractor(FenceAwareExtractor):
             alias = None
             if "|" in content:
                 content, alias = (s.strip() for s in content.split("|", 1))
-            target = content.split("#", 1)[0].strip()
-            # The anchor is dropped from the link target, so drop it from the text
-            # too; fall back to the raw content for an anchor-only [[#Heading]].
-            display = alias or target or content
+            parts = content.split("#")
+            target = parts[0].strip()
+            sub = parts[-1].strip() if len(parts) > 1 else ""
+            heading = "" if sub.startswith("^") else sub
             token = f"xLINK{len(links)}x"
+            if not target and len(parts) > 1:
+                links[token] = self._same_note(heading, alias or heading or content,
+                                               f"#{sub}", own)
+                return token
             title = prefixed_title(self.prefix, target)
-            links[token] = Wikilink(title, display, title if target else display)
+            known = others(target) if others is not None and heading else None
+            anchor = (known and known.find(heading)) or HeadingAnchors.guess(heading)
+            links[token] = Wikilink(title, alias or target or content,
+                                    title if target else content, anchor)
             return token
 
         def line_links(line):               # B11: links inside `code` stay as written
@@ -293,6 +318,27 @@ class WikilinkExtractor(FenceAwareExtractor):
         out = self.rewrite(md.splitlines(keepends=True),
                            lambda lines, i: (i + 1, [line_links(lines[i])]))
         return "".join(out), links
+
+    @staticmethod
+    def _same_note(heading, display, name, own):
+        """A ``[[#Heading]]`` link; ``missing`` when the note has no such heading."""
+        anchor = own.find(heading) if own is not None and heading else None
+        missing = anchor is None and (own is not None or not heading)
+        if missing and heading:             # set mode keeps it: it stays on the page
+            anchor = HeadingAnchors.guess(heading)
+        return Wikilink("", display, name, anchor, same_note=True, missing=missing)
+
+
+def callout_at(lines, i):
+    """The callout at line ``i``: ``(title match, next line, body without >)`` or ``None``
+    (the one callout rule, shared by the extractor and :func:`note_headings`)."""
+    m = _CALLOUT_RE.match(lines[i])
+    if not m:
+        return None
+    j = i + 1
+    while j < len(lines) and lines[j].startswith(">"):
+        j += 1
+    return m, j, [re.sub(r"^>\s?", "", line) for line in lines[i + 1:j]]
 
 
 class CalloutExtractor(FenceAwareExtractor):
@@ -313,15 +359,12 @@ class CalloutExtractor(FenceAwareExtractor):
         macros = {}
 
         def handle(lines, i):
-            m = _CALLOUT_RE.match(lines[i])
-            if not m:
+            hit = callout_at(lines, i)
+            if hit is None:
                 return None
+            m, i, body = hit
             ctype = m.group(1).lower()
             title = m.group(2).strip()
-            i += 1
-            body = []
-            while i < len(lines) and lines[i].startswith(">"):
-                body.append(re.sub(r"^>\s?", "", lines[i])); i += 1
             macro = CALLOUT_MACRO.get(ctype, "info")
             body_html = self.renderer.render("\n".join(body)) if body else ""
             title_html = f"<p><strong>{self.renderer.inline(title)}</strong></p>\n" if title else ""
@@ -366,7 +409,7 @@ class StorageDocument:
         """
         out = []
         for link in self.links.values():
-            if not exists(link.target) and link.name not in out:
+            if not link.resolved(exists) and link.name not in out:
                 out.append(link.name)
         return out
 
@@ -441,14 +484,24 @@ class StorageConverter:
         atts = [(fn, str(pathlib.Path(self.img_dir) / fn)) for fn in names]
         return html, atts
 
-    def convert(self, md: str) -> StorageDocument:
+    def convert(self, md: str, headings_of=None) -> StorageDocument:
         """Convert Markdown to a validated storage document. The order is load-bearing.
 
+        :param headings_of: ``bare title -> list[Heading] | None``: the other
+            documents' headings (set mode), so ``[[NN - Title#H]]`` jumps to the
+            real heading; ``None`` computes such anchors from the link text.
         :raises xml.etree.ElementTree.ParseError: if the body is not well-formed.
         """
+        inline = self.renderer.inline
+        own = HeadingAnchors(note_headings(md), inline)     # before frontmatter is cut
+        others = None
+        if headings_of is not None:
+            def others(title):
+                found = headings_of(title)
+                return None if found is None else HeadingAnchors(found, inline)
         md = strip_frontmatter(md)
         md, tocs = self.toc.extract(md)            # before wikilinks: [[TOC]] is not a page link
-        md, links = self.wikilinks.extract(md)     # before conversion (converter flattens them)
+        md, links = self.wikilinks.extract(md, own, others)   # before conversion (flattened)
         md, macros = self.callouts.extract(md)
         if self.img_dir is not None:
             pathlib.Path(self.img_dir).mkdir(parents=True, exist_ok=True)
@@ -467,3 +520,136 @@ class StorageConverter:
                               links, template)
         doc.validate()
         return doc
+
+
+# --------------------------------------------------------------------------- #
+#  Headings of a note (one parser: H2 section references, H3 same-note anchors)
+# --------------------------------------------------------------------------- #
+
+_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
+_HEADING_NUMBER_RE = re.compile(r"(\d+(?:\.\d+)*)(\.?)(?=\s|$)")
+
+
+@dataclasses.dataclass(frozen=True)
+class Heading:
+    """One ATX heading of a note.
+
+    :param level: 1-6 (the number of ``#``).
+    :param text: the heading as written, without the ``#`` marks: what an Obsidian
+        ``[[#Heading]]`` link names.
+    :param line: 1-based line number in the file (frontmatter counted).
+    :param in_callout: inside an Obsidian callout (rendered as a heading in the panel).
+    """
+    level: int
+    text: str
+    line: int
+    in_callout: bool = False
+
+    @property
+    def number(self):
+        """``"3"`` for ``3. Title``, ``"3.2"`` for ``3.2 Title`` / ``3.2. Title``;
+        ``None`` for an unnumbered heading (``7 Title`` and ``2026 plans`` too)."""
+        m = _HEADING_NUMBER_RE.match(self.text)
+        if m and (m.group(2) or "." in m.group(1)):
+            return m.group(1)
+        return None
+
+
+def note_headings(md: str) -> list:
+    """Every ATX heading of ``md`` outside code fences and frontmatter, in order: the
+    ``<hN>`` of the body, so callout bodies count and ``> ##`` quotes do not (B3).
+
+    The one heading parser: it shares the extractors' fence rule (``is_fence``) and
+    callout rule (:func:`callout_at`); line numbers are file lines.
+
+    :param md: the note's whole text.
+    :rtype: list[Heading]
+    """
+    lines = md.split("\n")
+    first, found = _body_start(lines), []
+
+    def add(line, number, in_callout=False):
+        m = _HEADING_RE.match(line)
+        if m and m.group(2):
+            found.append(Heading(len(m.group(1)), m.group(2), number, in_callout))
+
+    def handle(lines, i):
+        if i < first:
+            return None
+        hit = callout_at(lines, i)
+        if hit is None:
+            add(lines[i], i + 1)
+            return None
+        _, end, body = hit
+        in_fence = False                        # a fence inside the callout body
+        for k, line in enumerate(body):
+            if FenceAwareExtractor.is_fence(line):
+                in_fence = not in_fence
+            elif not in_fence:
+                add(line, i + 2 + k, True)
+        return end, lines[i:end]
+
+    FenceAwareExtractor().rewrite(lines, handle)
+    return found
+
+
+# --------------------------------------------------------------------------- #
+#  Plain-text section references (H2): a warning, never part of the body
+# --------------------------------------------------------------------------- #
+
+_SECTION_REF_RE = re.compile(r"§[ \u00a0]?(\d+(?:\.\d+)*)")
+_LINKED_TEXT_RE = re.compile(r"\[\[[^\]]+\]\]|\[[^\]]*\]\([^)]*\)")  # [[…]], [text](url)
+
+
+class SectionRefFinder(FenceAwareExtractor):
+    """Find bare ``§N`` / ``§N.M`` text that names a numbered heading of the same note.
+
+    Such a reference is a link in the writer's head but plain text on the page
+    (H2): it is reported so the writer links it as ``[[#Heading|§N]]``. Only a
+    reference whose number matches a heading numbered ``N.`` or ``N.M``
+    (:attr:`Heading.number`, from :func:`note_headings`) counts: a ``§`` pointing
+    into another document is left alone. Code is skipped with the extractors'
+    own rules (fences: :meth:`is_fence`; inline spans:
+    :func:`~.markdown_html.outside_code`), and so is text that is already a
+    link (``[[…|§3]]``, ``[§3](…)``). Pure: it reads the Markdown, never
+    changes the body.
+    """
+
+    def find(self, md: str) -> list:
+        """Return distinct ``[(ref, line)]``, e.g. ``[("§3", 48)]``, in order of appearance.
+
+        :param md: the note's whole text; frontmatter is skipped but counted,
+            so ``line`` is the 1-based line number in the file.
+        :rtype: list[tuple[str, int]]
+        """
+        numbers = {h.number for h in note_headings(md)} - {None}
+        if not numbers:
+            return []
+        lines = md.split("\n")
+        first, refs = _body_start(lines), []
+
+        def scan(part, line_no):
+            for m in _SECTION_REF_RE.finditer(_LINKED_TEXT_RE.sub(" ", part)):
+                refs.append((m.group(1), line_no))
+            return part
+
+        def handle(lines, i):
+            if i >= first:
+                outside_code(lines[i], lambda part: scan(part, i + 1))
+            return None
+
+        self.rewrite(lines, handle)
+        hits = [(f"§{n}", line) for n, line in refs if n in numbers]
+        return list(dict.fromkeys(hits))    # "§1 and §1" on one line: listed once
+
+    def extract(self, md: str):
+        return md, {}                       # never rewrites: it only reports
+
+
+def _body_start(lines) -> int:
+    """Index of the first line after a leading ``---`` frontmatter block (0 if none)."""
+    if lines and lines[0].strip() == "---":
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                return i + 1
+    return 0

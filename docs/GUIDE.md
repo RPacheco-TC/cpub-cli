@@ -108,8 +108,9 @@ Do this in order:
    - Link to a numbered doc with its FULL name: [[03 - Domain Concepts]], never the
      bare [[Domain Concepts]].
    - Link to an In Situ doc by its bare title: [[Some Subsystem]].
-   - Only use #heading anchors for links inside the SAME document, to headings you
-     wrote yourself (use the exact heading text).
+   - #heading anchors jump to the heading in Confluence, inside the same document
+     ([[#Heading]]) or to another doc of the set ([[03 - Domain Concepts#Heading]]);
+     use the exact heading text.
 
 5. FINALIZE:
    - Generate "00 - Index.md" LAST, listing every document with a one-line summary.
@@ -331,6 +332,8 @@ From then on `cpub "My Note.md"` with no flag publishes the note to that page. U
 - **No title prefix** is added in note mode unless you pass `--prefix`.
 - **Diagrams** are rendered into your user cache folder (`~/.cache/confluence-publisher/img`), not next to the note, so nothing new appears in your vault.
 - **Links to other notes** (`[[Other note]]`) become page links by title when a page with that title exists in the space. A link to a note that is not in Confluence yet is published as its text, in italics, and the run lists it once (`1 link left as text: Other note`, also on `--dry-run`). Publish that note, then this one again, to turn it into a link.
+- **Heading links** (`[[#Heading]]`, `[[Other note#Heading]]`, or with an alias, `[[#6. Who may act|§6]]`) jump to that heading in Confluence. A link to a heading this note does not have is published as its text and listed with the links left as text (`#Heading`). Headings inside callouts count too; when a callout heading and a body heading share their text, the link goes to the body one. Backticks inside `[[#…]]` are not supported: link to the heading text without them (``[[#Run cpub check]]`` for ``## Run `cpub check` ``).
+- **Section references written as plain text** (`see §6`) are not links in Obsidian or in Confluence. When a note has a heading numbered `6.`, cpub lists each bare `§6` with its line, e.g. `1 section reference is plain text: §6 (line 222). Link it as [[#Heading|§N]].` (also on `--dry-run`). It is only a warning: link it in Obsidian as `[[#6. Heading|§6]]`, then publish again.
 
 ## Publish the current note from Obsidian
 

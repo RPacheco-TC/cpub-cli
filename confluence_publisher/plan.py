@@ -7,11 +7,13 @@ reads (GETs only) and :meth:`Plan.refusals` decides; only
 :class:`~.executor.PlanExecutor` writes.
 """
 import dataclasses
+import html
+import re
 
 from .api import MARKER_TOOL
 from .docset import CONTAINER, IN_SITU
 from .errors import DiagramsUnrenderable
-from .storage import prefixed_title
+from .storage import SectionRefFinder, note_headings, prefixed_title
 
 #: Body of the "In Situ" container page (v1.1 text, byte-identical).
 INSITU_CONTAINER_BODY = "<p>Stack-specific deep-dive docs for this repository.</p>"
@@ -20,6 +22,8 @@ CONTAINER_REF = "@in-situ-container"
 DEFAULT_MAX_UPDATES = 25
 #: Plan modes: a doc set, a note under a page (``--under``), a note replacing a page (``--to``).
 SET, UNDER, TO = "set", "under", "to"
+#: The page a heading link (``ac:anchor`` + ``ri:page``) points at (H3, D36).
+_ANCHORED_PAGE_RE = re.compile(r'<ac:link ac:anchor="[^"]*"><ri:page ri:content-title="([^"]*)"')
 
 
 @dataclasses.dataclass
@@ -48,6 +52,12 @@ class PlanItem:
     resave_message: str = "link diagram attachments"
     old_size: int | None = None     # current body, UTF-8 bytes (note mode UPDATE only)
     unrendered: int = 0             # Mermaid diagrams left as code (npx not found)
+    # H2: bare "§N" naming a numbered heading of the same source, [(ref, line)]
+    section_refs: list = dataclasses.field(default_factory=list)
+    # D37: a page linking a heading of a page CREATED later in the run is saved once
+    # more at the end of the run (Confluence links an anchor only to an existing page)
+    relink: bool = False
+    relink_message: str = "link heading anchors"
 
     @property
     def new_size(self):
@@ -220,11 +230,14 @@ class Planner:
     :param client: the :class:`~.api.ConfluenceClient` (only its reads are used).
     :param converter: the :class:`~.storage.StorageConverter`; its ``prefix``
         namespaces every title.
+    :param sections: finds plain-text section references for the H2 warning
+        (default :class:`~.storage.SectionRefFinder`); it never changes a body.
     """
 
-    def __init__(self, client, converter):
+    def __init__(self, client, converter, sections=None):
         self.client = client
         self.converter = converter
+        self.sections = SectionRefFinder() if sections is None else sections
 
     def build(self, source, space_id, parent_id) -> Plan:
         """Plan a source under a parent page (set mode, or a note with ``--under``).
@@ -244,6 +257,9 @@ class Planner:
         parent_id = str(parent_id)
         entries = list(source.entries())
         texts = {id(e): e.text() for e in entries if e.placement != CONTAINER}
+        # H3: set mode links [[NN - Title#H]] to the real heading of that document
+        headings = None if note else {e.title: note_headings(texts[id(e)])
+                                      for e in entries if id(e) in texts}.get
         items, container, note_doc = [], None, None
         for e in entries:
             title = prefixed_title(prefix, e.title)
@@ -253,7 +269,7 @@ class Planner:
                                      storage=INSITU_CONTAINER_BODY)
                 items.append(container)
                 continue
-            doc = self.converter.convert(texts[id(e)])      # convert + validate
+            doc = self.converter.convert(texts[id(e)], headings)    # convert + validate
             if note:
                 self._check_diagrams(source, doc)
                 note_doc = doc
@@ -263,7 +279,8 @@ class Planner:
                                   attachments=doc.attachments,
                                   version_message=self._message(source),
                                   resave_message=self._resave_message(source),
-                                  unrendered=doc.unrendered))
+                                  unrendered=doc.unrendered,
+                                  section_refs=self.sections.find(texts[id(e)])))
 
         parent_info = self.client.get_page_info(parent_id)
         requested = space_id
@@ -285,6 +302,7 @@ class Planner:
             for it in items:
                 if it.parent_ref == CONTAINER_REF:
                     it.parent_ref = container.page_id
+        self._flag_forward_anchors(items)
         return Plan(space_id=str(space_id), parent_id=parent_id, prefix=prefix,
                     items=items, parent_info=parent_info, mode=UNDER if note else SET,
                     space_info=space_info,
@@ -315,7 +333,8 @@ class Planner:
             title = prefixed_title(self.converter.prefix, note.title)
         it = PlanItem(title=title, source=entry.source_id, action="UPDATE",
                       page_id=target_id, parent_ref=info["parentId"], storage=doc.html,
-                      attachments=doc.attachments, version_message=self._message(note))
+                      attachments=doc.attachments, version_message=self._message(note),
+                      section_refs=self.sections.find(entry.text()))
         self._apply_info(it, info)
         it.in_subtree = True                # --to: the page given is the fence
         self._read_marker(it)
@@ -346,6 +365,18 @@ class Planner:
         """A note never publishes its diagrams as code: refused before any read."""
         if doc.unrendered:
             raise DiagramsUnrenderable(note.filename, doc.unrendered)
+
+    @staticmethod
+    def _flag_forward_anchors(items):
+        """D37: flag each page written (CREATE or UPDATE) whose heading links point at a
+        page created after it."""
+        later = set()
+        for it in reversed(items):
+            if it.kind == "page" and it.writes_body:
+                targets = {html.unescape(t) for t in _ANCHORED_PAGE_RE.findall(it.storage)}
+                it.relink = not later.isdisjoint(targets)
+            if it.action == "CREATE":
+                later.add(it.title)
 
     @staticmethod
     def _message(source):

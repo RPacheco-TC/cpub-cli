@@ -398,3 +398,61 @@ shell and no credentials of its own. See
 
 - [x] Link the plugin's public repository (done, with its 0.1.0 release).
 - [ ] Link its Obsidian community store page once it is listed.
+
+---
+
+## Heading links landed on the page, not the heading (fixed in 1.5.0)
+
+### Symptom
+
+Up to 1.4.2, `[[Page#Heading]]` and `[[#Heading]]` opened the page but did not
+scroll to the heading: the anchor was dropped on publish.
+
+### Root cause
+
+Confluence Cloud gives each heading its own id, and the old Confluence form
+(`<Title>-<text without spaces>`, still what the REST API's rendered view
+shows) is not the one the live page uses.
+
+### Fix
+
+1.5.0 writes Confluence's live id (decision D36, measured on Confluence Cloud):
+the heading's shown text, trimmed, with every whitespace character turned into
+`-`, and `.1`, `.2` for a repeated heading. The link survives an edit-and-save in
+the editor, which writes the same markup for a heading link made by hand.
+
+### TODO
+
+- [ ] This id is Confluence's renderer behaviour, not a documented format:
+  re-check a heading link live after a Confluence change.
+
+---
+
+## A link saved before its target page exists breaks on the next editor save
+
+### Symptom
+
+A link to a page that did not exist yet when the link's page was saved works in
+view mode. After the next edit-and-save in the Confluence editor it becomes a
+"create page" link: it may still open the page, but a heading link loses its
+heading for good. This happens to a plain forward link in a new set (`[[03 - C]]`
+in `01 - A`, published before `03 - C` exists) and to a link to a page that never
+exists (`[[Nowhere]]`; set mode keeps every link).
+
+### Root cause
+
+Confluence ties a link to its target page only when the body is saved
+(`ri:version-at-save`). A link saved while the target is missing stays unlinked,
+and the editor rewrites unlinked page links as "create page" links.
+
+### Fix
+
+- Heading links (`[[NN - Title#Heading]]`) to a page created later in the same
+  run: fixed in 1.5.0 (decision D37). Every page written in the run that has one
+  is saved once more at the end of the run, after all its targets exist.
+- Plain links: no change, as in 1.4.2. Workaround: publish the set again before
+  editing its pages in Confluence.
+
+### TODO
+
+- [ ] Decide whether plain forward links get the same extra save.

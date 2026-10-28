@@ -192,6 +192,7 @@ class PublishFlow:
         if a.dry_run or refusals:
             p.table(plan.items)
             p.unresolved_links(plan.unresolved_links)        # S2.5, note mode only
+            p.section_refs(plan.items, per_page=not note)     # H2: a warning only
             if note and not refusals:                 # never preview what will be refused
                 p.preview(plan.items[0], self._space_label(plan))
             p.ownership(plan, refusals)
@@ -232,6 +233,7 @@ class PublishFlow:
 
         p.table(plan.items)
         p.unresolved_links(plan.unresolved_links)
+        p.section_refs(plan.items, per_page=not note)
         if a.adopt and plan.handover_items():
             p.ownership(plan, adopted=True)
         p.marker_warnings(report)

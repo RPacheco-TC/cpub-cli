@@ -187,6 +187,8 @@ cpub "My Note.md" --under <page URL or id>
 - **Safety is the same as for folders**: a page this tool published from the same note updates silently; any other page — written by hand, or published from a different note — needs the one-time hand-over (type the count, or `--adopt`). The space's **home page** can never be a `--to` target.
 - **The note can remember its page.** Put `confluence: <page URL or id>` (same as `--to`) or `confluence_parent: <page URL or id>` (same as `--under`) in the note's frontmatter, and `cpub "My Note.md"` needs no flag. A flag still wins; a note with both keys is refused. The tool never edits the note: after a publish made with a flag, it prints the line to paste. This is what makes a **one-key publish from Obsidian** possible with the **[cpub for Confluence](https://github.com/RPacheco-TC/confluence-publisher-obsidian)** plugin; see [Publish the current note from Obsidian](docs/GUIDE.md#publish-the-current-note-from-obsidian).
 - **Links to notes that are not in Confluence** stay readable: a `[[link]]` whose page does not exist in the space is published as its text (in italics) and listed once, e.g. `2 links left as text: Other note, Ideas` (also on `--dry-run`). A folder publishes every link, since its pages are created in the same run.
+- **Heading links jump to the heading**: `[[#Heading]]` and `[[Other note#Heading]]` land on that heading in Confluence (also after someone edits the page). A same-note link to a heading the note does not have is published as its text and listed with the other links left as text.
+- **Plain-text section references are flagged**: a bare `§6` in a note that has a heading numbered `6.` is listed with its line (`1 section reference is plain text: §6 (line 222). Link it as [[#Heading|§N]].`), so it can be made a heading link. A warning only: nothing is refused or changed.
 - **No title prefix** by default in note mode (pass `--prefix` if you want one).
 - **Diagrams** are rendered into your user cache folder (`~/.cache/confluence-publisher/img`, or `$XDG_CACHE_HOME/confluence-publisher/img`), never next to the note, so your vault stays untouched. `--img-dir` still overrides it.
 
@@ -300,7 +302,6 @@ Not yet implemented (contributions welcome):
 
 - A page map that survives renames (pages are matched by title inside the parent; the `cpub-managed` marker records ownership, not identity).
 - Content-hash skip of unchanged pages.
-- Exact heading-anchor links (`[[Page#Heading]]` currently lands on the page, not the heading).
 - A `--prune` option to remove pages whose source doc was deleted (off by default).
 
 ---

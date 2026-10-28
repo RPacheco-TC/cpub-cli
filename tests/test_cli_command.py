@@ -50,7 +50,7 @@ class Injected(unittest.TestCase):
             cp.build_parser("cpub").parse_args(["--version"])
         self.assertEqual(ctx.exception.code, 0)
         self.assertEqual(out.getvalue(), f"cpub {pkg.__version__}\n")
-        self.assertEqual(pkg.__version__, "1.4.2")
+        self.assertEqual(pkg.__version__, "1.5.0")
 
     def test_fix_lines_use_the_command(self):
         args = cp.build_parser("cpub").parse_args(["note.md"])

@@ -16,7 +16,7 @@ The Markdown is the source of truth; Confluence is a derived, re-publishable vie
 ```bash
 # Install the command (zero dependencies; uv brings Python 3.12+); or use pipx
 uv tool install git+https://github.com/RPacheco-TC/cpub-cli
-cpub --version                       # cpub 1.4.2; `confluence-publish` is the same command
+cpub --version                       # cpub 1.5.0; `confluence-publish` is the same command
 # From a clone, these are equivalent to `cpub …`:
 #   python3.12 confluence_publish.py …      python3.12 -m confluence_publisher …
 
@@ -40,6 +40,7 @@ python3.12 confluence_publish.py NOTE.md --under PAGE_URL_OR_ID [--title T]
 - **`--space` is optional** in both modes: the space comes from the page; when given it is checked against the page (refusal on mismatch). With `--space`, set mode makes exactly the v1.1/R2 request sequence.
 - **Note mode**: no title prefix by default; `--to` replaces exactly that page (no title search, never moved, title kept unless `--title`, the space homepage refused); `--under` titles the page `--title` > frontmatter `title:` > file stem and is fenced like a set. The marker source is the note's **filename**; the version comment is `Published from Obsidian: <filename>`. Diagrams render to `AppDirs().note_img_dir` (`$XDG_CACHE_HOME/confluence-publisher/img`), never into the vault.
 - **Unresolved links (S2.5, note mode only)**: the planner reads the space's titles once and gives `StorageConverter` a `link_resolver`; only the `xLINKNx` **restore** step changes (missing target → display text in `<em>`), never extraction, the fence rule or the step order. `plan.unresolved_links` feeds one `N links left as text: …` line (`PlanPrinter.unresolved_links`, real run and `--dry-run`). Set mode passes no resolver: byte-identical output.
+- **Plain-text section references (H2, warning only)**: `storage.SectionRefFinder` (pure, a `FenceAwareExtractor` that never rewrites) finds bare `§N` / `§N.M` outside code and outside `[[…]]` / `[…](…)` text whose number matches a heading numbered `N.` or `N.M` in the same source. `Planner` stores them on `PlanItem.section_refs` (file line numbers, frontmatter counted) and `PlanPrinter.section_refs` prints one `N section references are plain text: §3 (line 48), … Link them as [[#Heading|§N]].` line after the plan (real run, `--dry-run` and a refused plan; set mode: one line per page, `In <title>: …`). Bodies, requests and the exit code never change.
 - **Frontmatter target (S2.4)**: a note given with no `--to` / `--under` / `--parent` takes its target from its frontmatter: `confluence:` acts as `--to`, `confluence_parent:` as `--under` (`SingleNote.targets()` -> `{"to", "under"}`, read by `ModeResolver` through its injected `targets_of`, only when no flag is given). **Flags win**; both keys at once, or neither key and no flag, is a `CliError`. Values go through `PageRef.parse` like a flag. The tool **never writes the note** (D5): after a real publish made with a flag, on a note with neither key, `PlanPrinter.frontmatter_hint` prints the line to paste (the key mirrors the flag; the value is the by-id `viewpage.action?pageId=` URL, which has no `#` for YAML to eat). Publishing from Obsidian uses our own plugin **cpub for Confluence** (separate repo https://github.com/RPacheco-TC/confluence-publisher-obsidian; it runs `cpub` with `execFile`, never `--adopt`, no credentials); the recipe is in `docs/GUIDE.md` (the Shell commands plugin is broken on Obsidian 1.14, see `docs/KNOWN_ISSUES.md`).
 
 - **Credential lookup order, per variable, first hit wins:** real env vars → `--env-file PATH` → `./.env` (cwd) → `$XDG_CONFIG_HOME/confluence-publisher/.env` (default `~/.config/…`). `CredentialLoader` parses `KEY=VALUE` / `export` / quotes / comments without executing anything; a missing `--env-file` is an error, a missing `./.env` or user file is not; a token file with `mode & 0o077` gets a `chmod 600` warning and the run continues. The `set -a; . ./.env; set +a` workflow still works (env wins).
@@ -106,6 +107,7 @@ confluence_publisher/
   undo.py          UndoPlanner (select the run, check versions; read-only), UndoPlan, UndoItem
   storage.py       FenceAwareExtractor (the one fence rule) -> TocExtractor, WikilinkExtractor,
                    CalloutExtractor; StorageConverter.convert(md) -> StorageDocument (.validate())
+  anchors.py       Confluence heading ids (D36): heading_plain, heading_anchor, HeadingAnchors
   markdown_html.py MarkdownRenderer (.render(md), .inline(text)); vanilla HTML only
   mermaid.py       MermaidRenderer(img_dir, npx=...) (npx mmdc -> content-hash PNGs);
                    stdlib only, no package imports
@@ -117,17 +119,18 @@ template.yaml      Stage 1 contract (stays at the root)
 
 ```
 markdown_html, mermaid  <-  storage  <-  plan  <-  executor  <-  cli
+markdown_html <- anchors <- storage (anchors imports nothing else of the package)
 cli_output <- cli_errors <- cli (output/error wording never imports api, plan or config;
                                   cli_errors reads only docset's frontmatter key names)
 cli_output, cli_errors, config, checks, api <- cli_commands <- cli (never the other way round)
 cli_output, cli_errors, docset, pageref, errors <- cli_publish <- cli (cli_publish never imports cli)
 docset <- plan; plan reads only constants from api; cli imports every module (composition root)
 errors: imports nothing; config, api, docset import only errors
-storage, markdown_html, mermaid: never import api — conversion stays pure and offline;
+storage, anchors, markdown_html, mermaid: never import api — conversion stays pure and offline;
 mermaid imports no package module (storage wires it into MarkdownRenderer)
 ```
 
-One responsibility per module, none over ~650 lines (markdown_html 570, cli 413, api 413, storage 381, config 374, plan 365, cli_commands 312, cli_errors 310, cli_publish 233, docset 219, cli_output 200, errors 199, checks 161, executor 124, pageref 84, mermaid 78). Lines stay at 100 characters or fewer.
+One responsibility per module, none over ~650 lines (storage 655, markdown_html 585, cli_commands 519, cli 448, api 435, plan 419, config 385, cli_errors 320, cli_publish 251, errors 247, cli_output 222, docset 219, executor 198, runlog 180, checks 168, undo 108, anchors 91, pageref 84, mermaid 78). Lines stay at 100 characters or fewer.
 
 **Composition.** `PublishCommand.from_args(args, out, **overrides)` is the only place that builds the real objects: `CredentialLoader().load()` → `ConfluenceClient(creds, HttpTransport())` → `DocSet.from_folder()` → `Planner(client, StorageConverter(prefix, img_dir, img_width)).build(...)` → `plan.refusals()` → `PlanExecutor(client).execute(...)`. No other module constructs a `ConfluenceClient`.
 
@@ -183,7 +186,7 @@ These shape the Markdown the publisher consumes, so they matter when debugging "
 - Filenames are `NN - Title.md` with gap-free numbering; `00 - Index.md` is generated last.
 - Cross-links to numbered docs use the **full** `[[NN - Title]]` form — a bare `[[Title]]` renders as unresolved in Obsidian. Only unnumbered In Situ docs are linked bare.
 - H2 section headings are **unnumbered plain text**, because the literal heading text is the cross-link anchor.
-- `#heading` anchors in wikilinks are currently **dropped** on publish (`WikilinkExtractor`) — the link lands on the page, not the heading. Confluence uses a different anchor scheme; this is a known limitation, not a bug to "fix" casually.
+- **Heading links keep their anchor (H3, D36)**: `[[#H]]` becomes a same-page `<ac:link ac:anchor="X">` (no `ri:page`), `[[P#H]]` adds `ri:page` by prefixed title. X is Confluence Cloud's own heading id, measured in the H3.0 spike: the heading's **shown** text (inline Markdown rendered, tags dropped), trimmed, every whitespace character → `-`, nothing else changed; repeats `.1`, `.2` across all levels (`anchors.HeadingAnchors`, pure). Same-note links resolve against `note_headings`, which lists exactly the body's `<hN>` (callout bodies included through `storage.callout_at`, the one callout rule; plain `> ##` quotes not; B3), leniently (case, spaces and punctuation ignored; a heading outside a callout wins); set mode passes `convert(md, headings_of)` so `[[NN - Title#H]]` finds that doc's real heading; otherwise X comes from the link text. A same-note link to a missing heading is S2.5 text in note mode (`#H` in the `links left as text` line) and kept as a link in set mode; `[[P#^block]]` stays a page link. Confluence links an anchor only to a page that exists when the body is saved, so a page written in a run (CREATE or UPDATE) that links a heading of a page created *later* in that run is saved once more after every write (D37: `Planner` sets `PlanItem.relink`, `PlanExecutor` re-saves with `link heading anchors`, version+1; one log line per page, with its last version; the plan table and `--max-updates` count do not change; plain forward links are unchanged, see `docs/KNOWN_ISSUES.md`). Bodies with no `#` link are byte-identical to 1.4.2. The rule is renderer behaviour, not a documented contract: re-check it live when Confluence changes.
 - Mermaid labels must avoid `( ) : ; , # & " ' < > { } [ ]` unquoted (Obsidian's parser is strict); the `mermaid:` block in `template.yaml` has the full rules.
 
 ## Operational gotchas

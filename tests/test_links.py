@@ -15,8 +15,8 @@ NOTE = ("# Note\n\nSee [[Existing]], [[Missing|the missing one]], [[Missing#Part
         "[[A and B]] and [[My note]].\n\n```\n[[Fenced]]\n```\n")
 
 
-def link(title, display):
-    return storage.Wikilink(title, display).macro
+def link(title, display, anchor=None):
+    return storage.Wikilink(title, display, anchor=anchor).macro
 
 
 def tree():
@@ -38,8 +38,9 @@ class Restore(unittest.TestCase):
     def test_convert_alone_is_unchanged_every_link_kept(self):
         doc = storage.StorageConverter().convert(NOTE)
         for title, display in (("Existing", "Existing"), ("Missing", "the missing one"),
-                               ("Missing", "Missing"), ("A and B", "A and B")):
+                               ("A and B", "A and B")):
             self.assertIn(link(title, display), doc.html)
+        self.assertIn(link("Missing", "Missing", "Part"), doc.html)      # H3: anchor kept
         self.assertIn("[[Fenced]]", doc.html)                     # fence rule unchanged
         self.assertEqual(doc.relink(lambda t: True).html, doc.html)
 

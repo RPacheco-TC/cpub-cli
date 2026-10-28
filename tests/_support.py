@@ -25,7 +25,7 @@ def _load():
 
 
 pkg = _load()
-from confluence_publisher import (api, checks, config, docset, errors,  # noqa: E402
+from confluence_publisher import (anchors, api, checks, config, docset, errors,  # noqa: E402
                                   executor, markdown_html, mermaid, pageref, plan, runlog,
                                   storage, undo)
 

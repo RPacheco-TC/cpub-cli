@@ -200,5 +200,52 @@ class Undo(unittest.TestCase):
         self.assertFalse(self.log.target("run1").undone)
 
 
+class ForwardAnchors(unittest.TestCase):
+    """D37: the extra save of a forward heading link keeps the log consistent."""
+    DOCS = (("01 - A", "[[02 - B#Notes]]\n"), ("02 - B", "## Notes\n[[01 - A#Top]]\n"))
+
+    def publish_set(self, f, log):
+        ds = docset.DocSet(tuple(docset.SourceDoc(t, md) for t, md in self.DOCS))
+        p = plan.Planner(f.client(), storage.StorageConverter()).build(ds, "S1", "10")
+        rec = log.recorder(runlog.PUBLISH, HOST, p.space_id)
+        executor.PlanExecutor(f.client(), today="2026-10-28").execute(p, log=rec)
+        return p
+
+    def test_created_line_has_the_final_version_and_a_republish_undoes(self):
+        f, (log, _) = tree(), new_log()
+        first = self.publish_set(f, log)
+        self.assertEqual([it.relink for it in first.items], [True, False])
+        lines = [json.loads(x) for x in log.files.text.splitlines()]
+        self.assertEqual([(x["title"], x["action"], x["version_after"]) for x in lines],
+                         [("02 - B", "CREATE", 1), ("01 - A", "CREATE", 2)])
+        a = lines[1]["page_id"]
+        self.assertEqual(f.client().get_page_info(a)["version"], 2)   # the log matches
+        up = undo.UndoPlanner(f.client(), log).build(undo.UndoPlanner.select(log, HOST))
+        self.assertEqual((up.restores, up.refused, len(up.created)), ([], [], 2))
+        again = self.publish_set(f, log)                 # a republish: UPDATEs, no extra save
+        self.assertEqual([it.relink for it in again.items], [False, False])
+        self.assertEqual(f.client().get_page_info(a)["version"], 3)
+        up = undo.UndoPlanner(f.client(), log).build(undo.UndoPlanner.select(log, HOST))
+        self.assertEqual([(r.page_id, r.version_after) for r in up.restores][:1], [(a, 3)])
+        self.assertEqual(up.refused, [])
+
+
+    def test_an_updated_page_resaved_for_a_new_target_undoes_to_before_the_run(self):
+        f, (log, _) = tree(), new_log()
+        f.add("20", "01 - A", parent="10")
+        managed(f, "20", "01 - A")
+        before = f.client().get_page_info("20")["version"]
+        p = self.publish_set(f, log)
+        self.assertEqual([(it.action, it.relink) for it in p.items],
+                         [("UPDATE", True), ("CREATE", False)])
+        line = [json.loads(x) for x in log.files.text.splitlines()][-1]
+        self.assertEqual((line["action"], line["version_before"], line["version_after"]),
+                         ("UPDATE", before, before + 2))
+        self.assertEqual(f.client().get_page_info("20")["version"], before + 2)
+        up = undo.UndoPlanner(f.client(), log).build(undo.UndoPlanner.select(log, HOST))
+        self.assertEqual([(r.page_id, r.version_before) for r in up.restores], [("20", before)])
+        self.assertEqual(up.refused, [])
+
+
 if __name__ == "__main__":
     unittest.main()

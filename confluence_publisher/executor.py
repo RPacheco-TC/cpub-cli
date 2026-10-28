@@ -64,22 +64,32 @@ class PlanExecutor:
             if not confirm(needs):
                 raise HandoverDeclined(needs)
         report = RunReport(pending=list(plan.items))
-        container_id = None
-        for it in plan.items:
-            parent = container_id if it.parent_ref == CONTAINER_REF else it.parent_ref
-            try:
-                pid, after = self._write(plan, it, parent, report)
-            except Exception as e:
-                report.error = e
-                raise PlanExecutionError(report) from e
-            if it.kind == "container":
-                container_id = pid
-            report.pending.remove(it)
-            report.written.append((it, pid))
+        container_id, deferred = None, []
+        try:
+            for it in plan.items:
+                parent = container_id if it.parent_ref == CONTAINER_REF else it.parent_ref
+                try:
+                    pid, after = self._write(plan, it, parent, report)
+                except Exception as e:
+                    report.error = e
+                    raise PlanExecutionError(report) from e
+                if it.kind == "container":
+                    container_id = pid
+                report.pending.remove(it)
+                report.written.append((it, pid))
+                event = {"action": it.action, "page_id": pid, "title": it.title,
+                         "source": it.source, "version_before": it.version,
+                         "version_after": after}
+                if it.relink:
+                    deferred.append((it, event))
+                elif log is not None:
+                    log(event)
+            for it, event in deferred:
+                self._relink(it, event, report)
+        finally:        # a written page is always logged, once, with its last version
             if log is not None:
-                log({"action": it.action, "page_id": pid, "title": it.title,
-                     "source": it.source, "version_before": it.version,
-                     "version_after": after})
+                for _, event in deferred:
+                    log(event)
         return report
 
     def undo(self, plan, *, confirm, log=None, message="Restored by cpub undo"):
@@ -150,6 +160,18 @@ class PlanExecutor:
             after = _version(saved, after + 1)
         report.partial = None
         return pid, after
+
+    def _relink(self, it, event, report):
+        """D37: save a page's body again once every page of the run exists, so
+        Confluence links its anchors to pages created after it. Same body."""
+        try:
+            saved = self.client.update_page(event["page_id"], it.title, it.storage,
+                                            it.relink_message,
+                                            expected_version=event["version_after"])
+        except Exception as e:
+            report.error = e
+            raise PlanExecutionError(report) from e
+        event["version_after"] = _version(saved, event["version_after"] + 1)
 
     def _mark(self, it, pid, report):
         existing = it.marker_ref if it.action == "UPDATE" else None

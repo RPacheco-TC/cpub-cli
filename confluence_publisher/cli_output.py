@@ -155,6 +155,23 @@ class PlanPrinter:
         if targets:
             self._print(f"{_plural(len(targets), 'link')} left as text: " + ", ".join(targets))
 
+    def section_refs(self, items, per_page=False):
+        """H2: bare ``§N`` that name a heading of the same page, one line per page.
+
+        A warning only: the bodies are published as planned. ``per_page`` (set
+        mode) starts each line with the page title.
+        """
+        for it in items:
+            refs = getattr(it, "section_refs", None)
+            if not refs:
+                continue
+            one = len(refs) == 1
+            where = ", ".join(f"{ref} (line {line})" for ref, line in refs)
+            head = f"In {it.title}: " if per_page else ""
+            self._print(f"{head}{_plural(len(refs), 'section reference')} "
+                        f"{'is' if one else 'are'} plain text: {where}. "
+                        f"Link {'it' if one else 'them'} as [[#Heading|§N]].")
+
     def frontmatter_hint(self, line):
         """After a publish driven by flags, the line that makes them unnecessary (AC-2.4.2).
 
