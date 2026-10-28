@@ -369,6 +369,31 @@ Press the key in any note that has a `confluence:` (or `confluence_parent:`) lin
 - **Credentials**: keep them in `~/.config/confluence-publisher/.env`. Obsidian runs the command from the vault folder, so a `./.env` in your project folder is not found from there.
 - To see what would happen first, make a second command with `--dry-run` at the end.
 
+## Undo a publish
+
+Published something you did not mean to? From a terminal:
+
+```bash
+cpub undo
+```
+
+It takes the last publish run from the tool's local log, shows what it would do, and asks you to type the page count:
+
+```
+Undo run 20261028-101500-3f9a2c (2026-10-28T10:15:00Z, your-company.atlassian.net):
+
+Restore (1):
+  - My Note  version 8 -> back to 7
+
+Restore 1 page to the version before the run? Type the number 1 to confirm:
+```
+
+- Every page the run updated goes back to the version before it, as a **new** version: the page history keeps everything.
+- A page someone edited after your publish is **left alone** and listed with its history link; restore it there by hand if you need to.
+- Pages the run **created** are only listed: undo never deletes anything.
+- `cpub undo --list` shows the last 10 runs; `cpub undo --run <id>` undoes an older one. A run can be undone once.
+- Undo always asks, so it does not run from the Obsidian hotkey: use a terminal.
+
 ---
 
 ## In one sentence

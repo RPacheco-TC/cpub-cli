@@ -10,6 +10,7 @@ import io
 import os
 import unittest
 
+from _fake_log import memory_log
 from _support import cli as cp, config, pkg
 import _support
 
@@ -58,7 +59,8 @@ def run_main(argv, environ):
     loader = config.CredentialLoader(environ=environ, cwd="/nonexistent",
                                      config_dir="/nonexistent", read_file=lambda p: None)
     args = cp.build_parser().parse_args(argv)
-    cp.PublishCommand.from_args(args, io.StringIO(), credential_loader=loader).run()
+    cp.PublishCommand.from_args(args, io.StringIO(), credential_loader=loader,
+                                run_log=memory_log()).run()
 
 
 class MainPreflight(unittest.TestCase):

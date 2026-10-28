@@ -68,6 +68,7 @@ import urllib.error
 from .errors import NotAMarkdownFile
 from .config import CredentialLoader, AppDirs, CredentialWriter
 from .checks import EnvironmentCheck
+from .runlog import RunLog
 from .api import ConfluenceClient, HttpTransport
 from .storage import StorageConverter
 from .docset import DocSet, SingleNote
@@ -75,7 +76,8 @@ from .plan import Planner, DEFAULT_MAX_UPDATES
 from .executor import PlanExecutor
 from .cli_output import HandoverPrompt
 from .cli_errors import ErrorTranslator, CREDENTIAL_LINES, TOKEN_URL
-from .cli_commands import SetupCommand, CheckReport, CheckCommand
+from .cli_commands import SetupCommand, CheckReport, CheckCommand, UndoCommand
+from .undo import UndoPlanner
 from .cli_publish import PublishFlow
 from . import __version__
 
@@ -96,7 +98,8 @@ examples:
 
   {cmd} setup   ask for your credentials, test them, save them (first run)
   {cmd} check   show what works: Python, credentials, connection, sign-in, npx
-  (setup and check are commands: publish a file or folder named so as ./setup)
+  {cmd} undo    put back the pages the last publish changed (--list shows past runs)
+  (setup, check and undo are commands: publish a file or folder named so as ./setup)
 
 A note can keep its target in its frontmatter, so {cmd} note.md needs no flag:
   confluence: PAGE         same as --to PAGE
@@ -323,8 +326,15 @@ class PublishCommand(PublishFlow):
             executor_factory=PlanExecutor,
             prompt=HandoverPrompt(out),
         )
+        if "run_log" not in overrides:               # S0.5; no I/O until a page is written
+            wiring["run_log"] = cls.real_run_log(app_dirs, out)
         wiring.update(overrides)
         return cls(args, out=out, **wiring)
+
+    @staticmethod
+    def real_run_log(app_dirs, out):
+        """The audit log in the user's state folder; a failed write warns on ``out``."""
+        return RunLog(app_dirs.log_path, warn=lambda msg: print(msg, file=out))
 
     @staticmethod
     def _real_planner(client, args, npx):
@@ -338,11 +348,26 @@ class PublishCommand(PublishFlow):
 # --- setup and check (reserved first words, D2) -----------------------------------------
 
 #: First words that name a command instead of a path to publish.
-SUBCOMMANDS = ("setup", "check")
+SUBCOMMANDS = ("setup", "check", "undo")
 
 
 def subcommand_parser(name, command):
-    """The small parser of ``setup`` / ``check``."""
+    """The small parser of ``setup`` / ``check`` / ``undo``."""
+    if name == "undo":
+        ap = argparse.ArgumentParser(
+            prog=f"{command} undo",
+            description="Put back every page the last publish run changed: each one is "
+                        "restored to the version it had before (Confluence keeps the full "
+                        "history). Pages the run created are listed, never deleted. A page "
+                        "edited since the run is left alone and listed. Shows its plan and "
+                        "asks you to type the page count; it needs a terminal.")
+        ap.add_argument("--run", default=None, metavar="ID",
+                        help="undo this run instead of the last one (see --list)")
+        ap.add_argument("--list", action="store_true",
+                        help="show the last 10 runs and what they changed; change nothing")
+        ap.add_argument("--env-file", default=None, metavar="PATH",
+                        help="read credentials from this .env file first")
+        return ap
     if name == "setup":
         ap = argparse.ArgumentParser(
             prog=f"{command} setup",
@@ -367,6 +392,16 @@ def build_subcommand(name, args, out=None, command=CommandName.FALLBACK, **overr
     out = out or sys.stdout
     client_factory = overrides.pop(
         "client_factory", lambda creds: ConfluenceClient(creds, HttpTransport()))
+    if name == "undo":
+        app_dirs = overrides.pop("app_dirs", None) or AppDirs()
+        wiring = dict(out=out, credential_loader=CredentialLoader(),
+                      client_factory=client_factory, planner_factory=UndoPlanner,
+                      select=UndoPlanner.select, executor_factory=PlanExecutor,
+                      ask=input, stdin=sys.stdin, command=command)
+        wiring.update(overrides)
+        if "run_log" not in wiring:
+            wiring["run_log"] = PublishCommand.real_run_log(app_dirs, out)
+        return UndoCommand(args, **wiring)
     if name == "setup":
         wiring = dict(out=out, ask=input, ask_secret=getpass.getpass, stdin=sys.stdin,
                       client_factory=client_factory, command=command)

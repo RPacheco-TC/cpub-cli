@@ -331,3 +331,36 @@ labelled or not.
 ### TODO
 
 - [ ] Revisit if Confluence's create call starts accepting a version message.
+
+---
+
+## `cpub undo` leaves created pages, attachments and older runs alone
+
+### Symptom
+
+- After `cpub undo`, pages the run **created** are still in Confluence (undo lists
+  them), and diagram **attachments** the run uploaded stay on their pages.
+- An undo cannot itself be undone with `cpub undo`, and runs published before
+  v1.4 are not in the log, so `cpub undo` says there is nothing to undo.
+- A page edited after the publish is not restored (undo lists it with its
+  history link).
+- If a restore fails half way (network), the run is **not** marked undone; the
+  pages already restored now count as "edited since the run".
+
+### Root cause
+
+By design (S0.5, decisions D-3 to D-5): the tool never deletes anything, and it
+never overwrites a version someone else saved after it. The log only exists from
+v1.4 on.
+
+### Workaround
+
+- Delete created pages by hand in Confluence if you do not want them.
+- To undo an undo, or a page edited since, use the page history link that undo
+  prints ("Restore this version" in Confluence).
+- After a failed undo, fix the cause and run `cpub undo` again: it picks the same
+  run and restores only the pages still at the version the publish wrote.
+
+### TODO
+
+- [ ] A `--delete-created` opt-in, only if users ask for it (never by default).

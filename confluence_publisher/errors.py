@@ -203,6 +203,20 @@ class ConfigExists(PublisherError):
         self.path = path
 
 
+class UndoError(PublisherError):
+    """``cpub undo`` cannot start (S0.5); nothing is read from or written to pages.
+
+    ``.code`` says why: ``nothing`` (no publish run left to undo), ``unknown``
+    (no such ``--run``), ``undone`` (that run was already undone), ``other-site``
+    (it was logged against another Confluence host), ``not-interactive`` (undo
+    needs the typed confirmation), ``declined`` (the user did not confirm).
+    """
+    def __init__(self, code, run_id=None, logged_host=None, host=None):
+        self.code, self.run_id = code, run_id
+        self.logged_host, self.host = logged_host, host
+        super().__init__(f"cannot undo ({code})" + (f": run {run_id}" if run_id else ""))
+
+
 class PlanExecutionError(PublisherError):
     """A write failed mid-run; ``report`` says what was and was not written."""
     def __init__(self, report):

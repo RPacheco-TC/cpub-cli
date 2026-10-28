@@ -111,6 +111,16 @@ class AppDirs:
         return self._base("XDG_CACHE_HOME", ".cache") / self.APP
 
     @property
+    def state_dir(self) -> pathlib.Path:
+        """``$XDG_STATE_HOME/confluence-publisher`` (default ``~/.local/state/…``)."""
+        return self._base("XDG_STATE_HOME", ".local/state") / self.APP
+
+    @property
+    def log_path(self) -> pathlib.Path:
+        """The audit log of every write (S0.5): ``state_dir / "log.jsonl"``."""
+        return self.state_dir / "log.jsonl"
+
+    @property
     def note_img_dir(self) -> pathlib.Path:
         """Where note mode renders Mermaid PNGs, outside the vault (S2.6)."""
         return self.cache_dir / "img"

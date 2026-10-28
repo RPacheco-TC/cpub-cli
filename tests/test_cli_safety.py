@@ -19,6 +19,7 @@ import types
 import unittest
 import urllib.error
 
+from _fake_log import memory_log
 from _support import cli as cp, config, docset, errors, plan, storage, ROOT
 
 DOCS = str(ROOT / "tests")          # a real folder with no .md files
@@ -60,6 +61,7 @@ class FakePlan:
         self.items, self._refusals = list(items), list(refusals)
         self.parent_info = {"webui": "/spaces/ENG/pages/100/Parent"}
         self.unresolved_links = []                   # S2.5: note mode only
+        self.space_id = "S1"
 
     def refusals(self, max_updates=25):
         return list(self._refusals)
@@ -141,7 +143,8 @@ class Fake:
         return dict(credential_loader=Loader(), client_factory=lambda creds: Client(),
                     planner_factory=lambda client, args: Planner(),
                     executor_factory=lambda client: Executor(),
-                    prompt=cp.HandoverPrompt(out, ask=ask, stdin=FakeStdin(f.tty)))
+                    prompt=cp.HandoverPrompt(out, ask=ask, stdin=FakeStdin(f.tty)),
+                    run_log=memory_log())
 
 
 def run(fake, *extra, argv=None):
@@ -580,7 +583,8 @@ class EndToEnd(unittest.TestCase):
             # no image folder: these docs have no diagrams and the test writes no files
             planner_factory=lambda client, a: plan.Planner(
                 client, storage.StorageConverter(a.prefix, None, a.img_width)),
-            prompt=cp.HandoverPrompt(out, ask=ask, stdin=FakeStdin(tty)))
+            prompt=cp.HandoverPrompt(out, ask=ask, stdin=FakeStdin(tty)),
+            run_log=memory_log())                 # never the real audit log
         try:
             cmd.run()
             return None, out.getvalue(), prompts

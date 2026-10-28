@@ -19,7 +19,9 @@ import argparse
 import urllib.error
 import urllib.parse
 
-from .errors import CliError, ConfigExists, InsecureBaseUrl, PublisherError
+from .errors import (CliError, ConfigExists, InsecureBaseUrl, InvalidBaseUrl, PublisherError,
+                     MissingCredentials, UndoError, PlanExecutionError)
+from .runlog import UNDO
 from .config import Credentials
 from .checks import OK, WARN, FAIL, SKIP
 from .cli_errors import ErrorTranslator, CREDENTIAL_LINES, TOKEN_URL, KNOWN_ISSUES_URL
@@ -325,3 +327,193 @@ class CheckCommand:
         status = self.report.show(self.checks.run(self.args.env_file))
         if status:
             raise SystemExit(status)
+
+
+# --- undo (S0.5) -------------------------------------------------------------------------
+
+class UndoCommand:
+    """``undo``: restore the pages the last publish run changed (S0.5, D-2..D-6).
+
+    Read-only until the typed confirmation: the run is chosen from the local
+    log, then each page it UPDATEd is checked against its current version.
+    Pages edited since are left alone and listed; created pages are listed and
+    never deleted. It needs a terminal (D-4).
+
+    :param args: ``run``, ``list``, ``env_file``.
+    :param run_log: a :class:`~.runlog.RunLog`.
+    :param credential_loader: ``.load(env_file) -> Credentials``.
+    :param client_factory: ``Credentials -> ConfluenceClient``.
+    :param planner_factory: ``(client, run_log) -> UndoPlanner``.
+    :param select: ``(run_log, host, run_id) -> Run`` (``UndoPlanner.select``).
+    :param executor_factory: ``client -> PlanExecutor`` (its ``undo``).
+    :param ask: ``prompt -> str``; :param stdin: checked with ``isatty()``.
+    """
+
+    def __init__(self, args, *, out, run_log, credential_loader, client_factory,
+                 planner_factory, select, executor_factory, ask, stdin, command):
+        self.args, self.out, self.run_log, self.command = args, out, run_log, command
+        self.credential_loader, self.client_factory = credential_loader, client_factory
+        self.planner_factory, self.select = planner_factory, select
+        self.executor_factory, self.ask, self.stdin = executor_factory, ask, stdin
+        self.translator = ErrorTranslator(argparse.Namespace(space=None, parent=None),
+                                          command=command)
+
+    def _print(self, *lines):
+        for line in lines:
+            print(line, file=self.out)
+
+    def run(self):
+        """:raises SystemExit: on any expected failure (status 1)."""
+        try:
+            self._run()
+        except CliError as e:
+            raise SystemExit(self.translator.mask(str(e))) from None
+        except UndoError as e:
+            raise SystemExit(str(self.undo_error(e))) from None
+        except urllib.error.HTTPError as e:
+            raise SystemExit(self.translator.mask(str(self.translator.http(e)))) from None
+        except urllib.error.URLError as e:
+            raise SystemExit(self.translator.mask(str(self.translator.url(e)))) from None
+        except PlanExecutionError as e:
+            raise SystemExit(self.translator.mask(str(self.partial(e.report)))) from None
+
+    def _run(self):
+        if self.args.list:
+            self.show_runs(self.run_log.runs()[:10])
+            return
+        if not self.stdin.isatty():                # D-4: never undo unattended
+            raise UndoError("not-interactive")
+        credentials = self._credentials()
+        host = urllib.parse.urlsplit(credentials.base_url).hostname
+        run = self.select(self.run_log, host, self.args.run)     # before any request
+        client = self.client_factory(credentials)
+        me = client.whoami()                       # a bad token must not look like "gone"
+        if not me.get("authenticated"):
+            raise self.translator.unauthenticated(me)
+        plan = self.planner_factory(client, self.run_log).build(run)
+        self.show_plan(plan)
+        if not plan.restores:
+            self._print("\nNothing to restore; nothing was changed.")
+            return
+        recorder = self.run_log.recorder(UNDO, host, space_id=run.space_id, undoes=run.run_id)
+        report = self.executor_factory(client).undo(plan, confirm=self._confirm, log=recorder)
+        self.show_result(plan, report)
+
+    def _credentials(self):
+        try:
+            credentials = self.credential_loader.load(self.args.env_file)
+        except FileNotFoundError as e:
+            raise ErrorTranslator.env_file_missing(e.filename or self.args.env_file) from None
+        except MissingCredentials as e:
+            raise self.translator.missing_credentials(e.missing, e.searched) from None
+        except InsecureBaseUrl as e:
+            raise ErrorTranslator.insecure_base_url(e.scheme, e.host, e.source) from None
+        except InvalidBaseUrl as e:
+            raise ErrorTranslator.invalid_base_url(e.source) from None
+        self.translator = ErrorTranslator(argparse.Namespace(space=None, parent=None),
+                                          credentials, command=self.command)
+        return credentials
+
+    def _confirm(self, items):
+        n = len(items)
+        answer = self.ask(f"Restore {_plural(n, 'page')} to the version before the run? "
+                          f"Type the number {n} to confirm: ")
+        return answer.strip() == str(n)
+
+    # -- output --
+
+    def show_runs(self, runs):
+        if not runs:
+            self._print(f"No runs logged yet ({self.run_log.path}).")
+            return
+        self._print("Last runs, newest first:")
+        for r in runs:
+            if r.kind == UNDO:
+                what = f"undo of {r.undoes}: {_plural(len(r.pages), 'page')} restored"
+            else:
+                what = (f"publish: {len(r.updated())} updated, {len(r.created())} created"
+                        + ("  (undone)" if r.undone else ""))
+            self._print(f"  {r.run_id}  {r.time}  {r.host or '?'}  {what}")
+        self._print(f"\n{self.command} undo undoes the newest publish run not undone yet; "
+                    f"{self.command} undo --run ID picks one.")
+
+    def show_plan(self, plan):
+        run = plan.run
+        self._print(f"Undo run {run.run_id} ({run.time}, {run.host}):")
+        if plan.restores:
+            self._print(f"\nRestore ({len(plan.restores)}):")
+            for it in plan.restores:
+                self._print(f"  - {it.title}  version {it.version_after} -> back to "
+                            f"{it.version_before}")
+        if plan.refused:
+            self._print(f"\nLeft as they are ({len(plan.refused)}):")
+            for it in plan.refused:
+                why = ("deleted or archived since the run" if it.reason == "gone" else
+                       f"edited since the run (now version {it.current}, the run wrote "
+                       f"{it.version_after})")
+                self._print(f"  - {it.title}  {why}")
+                if it.history:
+                    self._print(f"    History: {it.history}")
+        if plan.created:
+            self._print(f"\nCreated by the run ({len(plan.created)}), not deleted "
+                        "(undo never deletes; remove them in Confluence if you want):")
+            for line in plan.created:
+                self._print(f"  - {line.get('title')}  (page id {line.get('page_id')})")
+
+    def show_result(self, plan, report):
+        restored = [it for it, _ in report.written]
+        skipped = [it for it in plan.restores if it not in restored]
+        self._print(f"\n{_plural(len(restored), 'page')} restored.")
+        if skipped:
+            self._print(f"Skipped, edited after this plan was shown ({len(skipped)}):")
+            for it in skipped:
+                self._print(f"  - {it.title}  (now version {it.current})")
+        else:
+            self._print(f"Run {plan.run.run_id} is undone.")
+
+    # -- messages --
+
+    def undo_error(self, e):
+        """Every :class:`~.errors.UndoError` code -> sentence + Fix (nothing changed)."""
+        cmd, rid = self.command, e.run_id
+        if e.code == "nothing":
+            return CliError("There is no publish run to undo.",
+                            f"Runs are logged from v1.4 on; {cmd} undo --list shows the log.")
+        if e.code == "unknown":
+            return CliError(f"There is no publish run {rid} in the log.",
+                            f"{cmd} undo --list shows the run ids.")
+        if e.code == "undone":
+            return CliError(f"Run {rid} was already undone.",
+                            f"{cmd} undo --list shows the runs; publish again to change "
+                            "the pages.")
+        if e.code == "other-site":
+            return CliError(f"Run {rid} was published to {e.logged_host}, but your "
+                            f"credentials are for {e.host}.",
+                            f"Use the credentials for {e.logged_host} (e.g. --env-file), "
+                            "or pick another run with --run.")
+        if e.code == "not-interactive":
+            return CliError(f"{cmd} undo asks you to confirm, so it needs a terminal.",
+                            "Run it in a terminal; nothing was changed.")
+        if e.code == "declined":
+            return CliError("Undo not confirmed; nothing was changed.",
+                            f"Run {cmd} undo again and type the page count to restore "
+                            "the pages.")
+        return CliError(str(e), f"{cmd} undo --list shows the log.")
+
+    def partial(self, report):
+        """A restore failed mid-way: say what was restored and what was not."""
+        why = report.error
+        if isinstance(why, urllib.error.HTTPError):
+            reason = self.translator.http(why).sentence
+        elif isinstance(why, urllib.error.URLError):
+            reason = self.translator.url(why).sentence
+        else:
+            reason = str(why)
+        done = "\n".join(f"- {it.title}" for it, _ in report.written) or "- (none)"
+        left = "\n".join(f"- {it.title}" for it in report.pending) or "- (none)"
+        return CliError("The undo stopped because a restore failed; the run is not marked "
+                        "undone.",
+                        f"Fix the cause, then run {self.command} undo again: pages already "
+                        "restored now show as edited since the run and are left alone.",
+                        f"{reason}\n\nRestored ({len(report.written)}):\n{done}\n"
+                        f"Not restored ({len(report.pending)}):\n{left}")

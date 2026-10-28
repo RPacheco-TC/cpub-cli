@@ -226,6 +226,24 @@ Type the number to go ahead; anything else writes nothing. The pages get the mar
 
 The marker is an **accident guard, not access control**: anyone with edit rights can remove a content property. Confluence permissions remain the real boundary.
 
+### Undo: put back what the last publish changed
+
+Every page a publish writes is recorded in a local audit log, `~/.local/state/confluence-publisher/log.jsonl` (or `$XDG_STATE_HOME/confluence-publisher/`; readable only by you). A line holds the run id, time, site, page id, title, action and the version before and after. Never a page body, a token or an email.
+
+```bash
+cpub undo --list     # the last 10 runs and what they changed (reads only the log)
+cpub undo            # put back the pages the last publish run updated
+cpub undo --run ID   # an older run instead
+```
+
+`cpub undo` shows its plan, then asks you to type the page count, like the hand-over:
+
+- Each page the run **updated** is restored to the version it had before, with Confluence's own version restore. That adds a new version, so the full history is kept.
+- A page **edited since the run** (by anyone) is left alone and listed with its history link, so nobody's later work is overwritten.
+- Pages the run **created** are listed, **never deleted** (remove them in Confluence if you want). Diagram attachments stay too.
+- It needs a terminal (there is no flag to skip the question), refuses a run that was already undone, and refuses a run published to a different site than your current credentials.
+
+
 ---
 
 ## Troubleshooting

@@ -10,12 +10,15 @@ nothing is patched and no file is read or written. Run from the repo root::
     python3.12 -B -m unittest discover -s tests
 """
 import io
+import json
+import urllib.parse
 import types
 import unittest
 
 from _support import cli, cli_output, config, docset, markdown_html, plan, storage
 from _support import mermaid as mmd
 from _fake_confluence import FakeConfluence, BASE
+from _fake_log import memory_log
 
 TOKEN = "s3cr3t-token-value"
 CREDS = config.Credentials(BASE, "x@example.invalid", TOKEN)
@@ -38,6 +41,7 @@ class NoteRun(unittest.TestCase):
         self.f.add("10", "TEST", parent="1")
         self.f.add("20", "Hand written", parent="10", version=7)   # unmanaged
         self.planner_args = []
+        self.log = memory_log()                  # never the real audit log
         self.converter = None                    # a test may inject one (e.g. without npx)
 
     def run_cli(self, *argv, tty=False, answer=None, markdown=NOTE_MD, app_dirs=None,
@@ -69,7 +73,7 @@ class NoteRun(unittest.TestCase):
             docset_loader=lambda path: docset.DocSet((docset.SourceDoc("01 - A", docs_md),)),
             planner_factory=planner,
             app_dirs=app_dirs or types.SimpleNamespace(note_img_dir="/cache/cp/img"),
-            prompt=cli.HandoverPrompt(out, ask=ask, stdin=FakeStdin(tty)))
+            prompt=cli.HandoverPrompt(out, ask=ask, stdin=FakeStdin(tty)), run_log=self.log)
         try:
             cmd.run()
             return None, out.getvalue(), prompts
@@ -283,6 +287,26 @@ class DiagramsWithoutNpx(NoteRun):
         self.assertNotIn("Warning: npx", out)
 
 
+class AuditLog(NoteRun):
+    """S0.5 (AC-0.5.1): a real publish appends one line per page; a dry run none."""
+
+    def test_publish_logs_the_write_without_body_token_or_email(self):
+        msg, _, _ = self.run_cli("My Note.md", "--to", "20", "--adopt")
+        self.assertIsNone(msg, msg)
+        (line,) = [json.loads(x) for x in self.log.files.text.splitlines()]
+        self.assertEqual((line["kind"], line["page_id"], line["action"], line["title"],
+                          line["version_before"], line["version_after"], line["host"]),
+                         ("publish", "20", "UPDATE", "Hand written", 7, 8,
+                          urllib.parse.urlsplit(BASE).hostname))
+        for secret in (TOKEN, CREDS.email, "body text"):
+            self.assertNotIn(secret, self.log.files.text)
+
+    def test_dry_run_and_refusals_log_nothing(self):
+        self.run_cli("My Note.md", "--to", "20", "--dry-run")
+        self.run_cli("My Note.md", "--to", "1", "--adopt")            # homepage: refused
+        self.assertEqual(self.log.files.text, "")
+
+
 class LinksToMissingPages(NoteRun):
     """S2.5 end to end: a link to a missing page becomes text and is listed once."""
     MD = "---\ntitle: Linker\n---\nSee [[Hand written]] and [[Missing note|the plan]].\n"
@@ -334,6 +358,7 @@ class DefaultWiring(unittest.TestCase):
     def test_the_real_planner_gets_the_npx_that_app_dirs_found(self):
         class Dirs:
             note_img_dir = "/cache/cp/img"
+            log_path = "/state/confluence-publisher/log.jsonl"   # never written here
             def __init__(self):
                 self.asked = []
             def find_executable(self, name):

@@ -149,6 +149,27 @@ class ConfluenceClient:
                     json.dumps(payload).encode(), {"Content-Type": "application/json"})[1]
 
 
+    def restore_version(self, page_id, version, message=""):
+        """Restore an earlier version as a new current version (``cpub undo``, S0.5).
+
+        Confluence's own restore (v1 ``POST /rest/api/content/{id}/version``,
+        ``operationKey: restore``): history is kept, nothing is deleted, the
+        title of that version comes back too.
+
+        :param page_id: the page id.
+        :param version: the version number to bring back.
+        :param message: the version comment of the new version.
+        :returns: the new version object (its ``number`` is the new current version).
+        :rtype: dict
+        """
+        payload = {"operationKey": "restore",
+                   "params": {"versionNumber": int(version), "message": message,
+                              "restoreTitle": True}}
+        return self._req("POST", f"{self.base_url}/rest/api/content/{page_id}/version",
+                         json.dumps(payload).encode(),
+                         {"Content-Type": "application/json"})[1]
+
+
     def upload_attachment(self, page_id, filepath, filename):
         """Upload a local file as a page attachment (v1 multipart endpoint).
 

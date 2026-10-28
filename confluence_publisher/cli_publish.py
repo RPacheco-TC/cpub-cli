@@ -8,6 +8,7 @@ constructs a Confluence client. This module never imports :mod:`.cli`.
 """
 import argparse
 import urllib.error
+import urllib.parse
 
 from .errors import (CliError, MissingCredentials, SpaceNotFound, NotAFolder, PlanRefused,
                      HandoverRequired, HandoverDeclined, PlanExecutionError, BadPageRef,
@@ -15,6 +16,7 @@ from .errors import (CliError, MissingCredentials, SpaceNotFound, NotAFolder, Pl
                      InvalidBaseUrl)
 from .docset import TO_KEY, UNDER_KEY
 from .pageref import PageRef
+from .runlog import PUBLISH
 from .cli_output import PlanPrinter
 from .cli_errors import ErrorTranslator
 
@@ -40,15 +42,18 @@ class PublishFlow:
         :class:`~.errors.NotAMarkdownFile`.
     :param app_dirs: an :class:`~.config.AppDirs` (the note-mode image cache folder).
     :param command: the command name for ``Fix:`` lines (see :class:`~.cli.CommandName`).
+    :param run_log: a :class:`~.runlog.RunLog` that records every write (S0.5), or
+        ``None`` for no audit log.
     """
 
     def __init__(self, args, *, out, credential_loader, client_factory, docset_loader,
                  planner_factory, executor_factory, prompt, mode_resolver,
-                 note_loader, app_dirs, command):
+                 note_loader, app_dirs, command, run_log=None):
         self.args, self.out, self.command = args, out, command
         self.mode_resolver = mode_resolver
         self.note_loader = note_loader
         self.app_dirs = app_dirs
+        self.run_log = run_log
         self.credential_loader = credential_loader
         self.client_factory = client_factory
         self.docset_loader = docset_loader
@@ -209,9 +214,13 @@ class PublishFlow:
         confirm = None
         if not a.adopt and self.prompt.is_interactive():
             confirm = self.prompt.confirm
+        log = None
+        if self.run_log is not None:                # S0.5: one line per page written
+            host = urllib.parse.urlsplit(credentials.base_url).hostname
+            log = self.run_log.recorder(PUBLISH, host, space_id=plan.space_id)
         try:
             report = self.executor_factory(client).execute(
-                plan, max_updates=a.max_updates, adopt=a.adopt, confirm=confirm)
+                plan, max_updates=a.max_updates, adopt=a.adopt, confirm=confirm, log=log)
         except PlanRefused as e:                       # re-checked inside the executor
             raise ErrorTranslator.refused(e.refusals) from None
         except HandoverRequired as e:

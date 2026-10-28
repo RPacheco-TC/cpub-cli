@@ -41,7 +41,8 @@ class FakeConfluence:
             version=3):
         page = {"title": title, "spaceId": space or self.space_id, "parentId": parent,
                 "status": status, "version": version, "body": "<p>old</p>", "props": {},
-                "atts": set()}
+                "atts": set(), "messages": {}}
+        page["history"] = {version: (title, "<p>old</p>")}
         if marker is not None:
             page["props"]["cpub-managed"] = {"id": f"prop{page_id}", "value": marker, "version": 1}
         self.pages[str(page_id)] = page
@@ -78,6 +79,21 @@ class FakeConfluence:
                 and parts[4:] == ["child", "attachment"]:
             self.pages[parts[3]]["atts"].add(_FILENAME_RE.search(data).group(1).decode())
             return 200, {}
+        if method == "POST" and parts[:3] == ["rest", "api", "content"] \
+                and parts[4:] == ["version"]:               # v1 version restore (undo)
+            page = self.pages.get(parts[3])
+            if page is None:
+                raise self._err(404, url, "not found")
+            params = body["params"]
+            assert body["operationKey"] == "restore"
+            old = page["history"].get(params["versionNumber"])
+            if old is None:
+                raise self._err(400, url, "no such version")
+            page["title"], page["body"] = old
+            page["version"] += 1
+            page["history"][page["version"]] = old
+            page["messages"][page["version"]] = params.get("message")
+            return 200, {"number": page["version"]}
         if path == "/rest/api/user/current" and method == "GET":
             if isinstance(self.user, int):
                 raise self._err(self.user, url, "Unauthorized")
@@ -99,8 +115,9 @@ class FakeConfluence:
             self.pages[pid] = {"title": body["title"], "spaceId": body["spaceId"],
                                "parentId": body["parentId"], "status": "current",
                                "version": 1, "body": body["body"]["value"],
-                               "props": {}, "atts": set()}
-            return 200, {"id": pid}
+                               "props": {}, "atts": set(), "messages": {},
+                               "history": {1: (body["title"], body["body"]["value"])}}
+            return 200, {"id": pid, "version": {"number": 1}}
         pid = parts[1]
         if pid not in self.pages:
             raise self._err(404, url, "not found")
@@ -120,7 +137,8 @@ class FakeConfluence:
                     raise self._err(409, url, "Version must be incremented")
                 page.update(title=body["title"], body=body["body"]["value"],
                             version=page["version"] + 1)
-                return 200, {"id": pid}
+                page["history"][page["version"]] = (page["title"], page["body"])
+                return 200, {"id": pid, "version": {"number": page["version"]}}
         if rest == ["ancestors"] and method == "GET":
             anc = [{"id": a, "type": "page"} for a in self.ancestors(pid)]
             if not self.ancestor_page_size:
