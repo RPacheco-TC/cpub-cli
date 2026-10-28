@@ -59,6 +59,7 @@ class FakePlan:
     def __init__(self, items, refusals):
         self.items, self._refusals = list(items), list(refusals)
         self.parent_info = {"webui": "/spaces/ENG/pages/100/Parent"}
+        self.unresolved_links = []                   # S2.5: note mode only
 
     def refusals(self, max_updates=25):
         return list(self._refusals)

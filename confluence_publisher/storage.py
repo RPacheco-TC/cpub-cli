@@ -95,6 +95,23 @@ def _code_blocks_to_macro(html: str) -> str:
     return re.sub(r"<pre><code>(.*?)</code></pre>", repl, html, flags=re.S)
 
 
+def _xml_text(text: str, attr: bool = False) -> str:
+    """Escape ``&``, ``<``, ``>`` (and ``"`` for an attribute value) for storage XHTML.
+
+    The one escape helper for link titles and link text (B10). Apostrophes are
+    left alone: attributes here are double-quoted, and titles with ``'`` were
+    already valid, so their output stays byte-identical.
+    """
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return text.replace('"', "&quot;") if attr else text
+
+
+def _cdata(text: str) -> str:
+    """Wrap ``text`` in CDATA; a literal ``]]>`` is split so it cannot end it early.
+    (CDATA is not entity-decoded, so its content must not be escaped.)"""
+    return "<![CDATA[" + text.replace("]]>", "]]]]><![CDATA[>") + "]]>"
+
+
 def _wikilink_macro(target_title: str, display: str) -> str:
     """Build a Confluence ``ac:link`` that points at a page by title.
 
@@ -105,9 +122,42 @@ def _wikilink_macro(target_title: str, display: str) -> str:
     :returns: the ``ac:link`` storage-format markup.
     :rtype: str
     """
-    t = target_title.replace('"', "&quot;")
-    return (f'<ac:link><ri:page ri:content-title="{t}" />'
-            f"<ac:plain-text-link-body><![CDATA[{display}]]></ac:plain-text-link-body></ac:link>")
+    return (f'<ac:link><ri:page ri:content-title="{_xml_text(target_title, attr=True)}" />'
+            f"<ac:plain-text-link-body>{_cdata(display)}</ac:plain-text-link-body></ac:link>")
+
+
+@dataclasses.dataclass(frozen=True)
+class Wikilink:
+    """One extracted ``[[wikilink]]``: what its ``xLINKNx`` token is restored to.
+
+    :param target: the (prefixed) title of the page it points at.
+    :param display: the text shown (alias, else the target without its anchor).
+    :param name: the target as written (unprefixed, no anchor; the display text
+        for an anchor-only ``[[#Heading]]``), for messages.
+    """
+    target: str
+    display: str
+    name: str = ""
+
+    @property
+    def macro(self) -> str:
+        """The ``ac:link`` it becomes when the page exists (byte-identical to v1.1)."""
+        return _wikilink_macro(self.target, self.display)
+
+    @property
+    def text(self) -> str:
+        """What it becomes when the page does not exist (S2.5): the text, in ``<em>``."""
+        return f"<em>{_xml_text(self.display)}</em>"
+
+
+def _restore_links(html, links, exists=None):
+    """The ``xLINKNx`` restore step (the last one): every token back to its link, or
+    to plain text when ``exists`` says its page is missing (S2.5). ``exists=None``
+    links everything, as v1.1 does."""
+    for token, link in links.items():
+        keep = exists is None or exists(link.target)
+        html = html.replace(token, link.macro if keep else link.text)
+    return html
 
 
 # --------------------------------------------------------------------------- #
@@ -230,7 +280,8 @@ class WikilinkExtractor(FenceAwareExtractor):
             # too; fall back to the raw content for an anchor-only [[#Heading]].
             display = alias or target or content
             token = f"xLINK{len(links)}x"
-            links[token] = _wikilink_macro(prefixed_title(self.prefix, target), display)
+            links[token] = Wikilink(prefixed_title(self.prefix, target), display,
+                                    target or display)
             return token
 
         out = self.rewrite(md.splitlines(keepends=True),
@@ -290,10 +341,40 @@ class StorageDocument:
     :param html: the storage XHTML fragment.
     :param attachments: ``(filename, filepath)`` pairs to upload before saving.
     :param unrendered: Mermaid diagrams left as code blocks because npx was not found.
+    :param links: ``{token: Wikilink}`` of the body, in order of appearance.
+    :param template: the body before the link restore step (tokens still in it),
+        so :meth:`relink` can redo only that step once titles are known (S2.5).
     """
     html: str
     attachments: list = dataclasses.field(default_factory=list)
     unrendered: int = 0
+    links: dict = dataclasses.field(default_factory=dict, repr=False)
+    template: str | None = dataclasses.field(default=None, repr=False)
+
+    def unresolved(self, exists) -> list:
+        """Links whose page is missing, as the reader wrote them (``Wikilink.name``:
+        no prefix, no anchor), distinct, in order of appearance.
+
+        :param exists: ``title -> bool`` (asked with the prefixed title).
+        :rtype: list[str]
+        """
+        out = []
+        for link in self.links.values():
+            if not exists(link.target) and link.name not in out:
+                out.append(link.name)
+        return out
+
+    def relink(self, exists) -> "StorageDocument":
+        """This document with links to missing pages restored as text (S2.5): only
+        the ``xLINKNx`` restore step is redone; the result is validated.
+
+        :param exists: ``title -> bool``.
+        """
+        if self.template is None or not self.links:
+            return self
+        doc = dataclasses.replace(self, html=_restore_links(self.template, self.links, exists))
+        doc.validate()
+        return doc
 
     def validate(self) -> None:
         """Check the body is well-formed XML.
@@ -374,8 +455,9 @@ class StorageConverter:
         html = _fix_autolinks(html)
         html = _escape_bare_amp(html)
         html = _code_blocks_to_macro(html)  # last: its CDATA must escape the amp-escape
-        for token, macro in links.items():
-            html = html.replace(token, macro)
-        doc = StorageDocument(html, atts, getattr(mermaid, "skipped", 0) - skipped)
+        template = html
+        html = _restore_links(html, links)  # every link, as v1.1; StorageDocument.relink (S2.5)
+        doc = StorageDocument(html, atts, getattr(mermaid, "skipped", 0) - skipped,
+                              links, template)
         doc.validate()
         return doc

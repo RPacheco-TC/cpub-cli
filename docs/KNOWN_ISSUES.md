@@ -270,31 +270,38 @@ is written then.
 
 ---
 
-## A single note's links to unpublished notes point at missing pages
+## Links to notes that are not in Confluence
 
 ### Symptom
 
-Publishing one note (`--to` / `--under`) turns every `[[Other note]]` into a
-Confluence link by title, as in a doc set. If `Other note` was never published
-to that space, the link shows as a link to a page that does not exist, and
-clicking it offers to create it.
+- **One note** (`--to` / `--under`, or a `confluence:` target): since v1.4 each
+  `[[Other note]]` is looked up by title in the space. If there is no such page,
+  the link is published as its display text in italics instead of a link to a
+  missing page, and the run says so once, also on `--dry-run`:
+  `2 links left as text: Other note, Design ideas`. The text does **not** turn
+  into a link by itself later: once `Other note` is published, publish this note
+  again.
+- **A folder** (set mode) is unchanged: every `[[link]]` becomes a link by title,
+  because the pages of the set are created in the same run (a lookup would drop
+  links to pages that are about to exist). A link to a note *outside* the folder
+  still points at a page that does not exist until that note is published.
 
 ### Root cause
 
-Planned behaviour for a later phase (S2.5, Phase 2): in note mode each link
-target will be looked up, and missing ones left as plain text with a warning.
-Phase 1b converts links exactly as set mode does, where every target is created
-in the same run.
+Confluence links by title, and set mode cannot know which titles will exist after
+the run without making every link depend on the run's own order. Note mode
+publishes one page, so it can ask the space first (S2.5, decision in the spec).
 
 ### Workaround
 
-Publish the linked notes too (or the whole folder), or write the reference as
-plain text in that note.
+Publish the linked notes first (or the whole folder), then republish the note.
+In set mode, keep cross-links inside the folder, or write outside references as
+plain text.
 
 ### TODO
 
-- [ ] S2.5: look up `[[targets]]` in note mode; degrade missing ones to text and
-  list them once.
+- [ ] Set mode: look up links that point outside the set (targets not in the
+  folder) and degrade only those.
 
 ---
 

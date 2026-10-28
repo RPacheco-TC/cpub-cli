@@ -13,7 +13,7 @@ import io
 import types
 import unittest
 
-from _support import cli, config, docset, markdown_html, plan, storage
+from _support import cli, cli_output, config, docset, markdown_html, plan, storage
 from _support import mermaid as mmd
 from _fake_confluence import FakeConfluence, BASE
 
@@ -281,6 +281,46 @@ class DiagramsWithoutNpx(NoteRun):
     def test_no_warning_when_nothing_is_skipped(self):
         _, out, _ = self.run_cli("docs", "--parent", "10", "--dry-run")
         self.assertNotIn("Warning: npx", out)
+
+
+class LinksToMissingPages(NoteRun):
+    """S2.5 end to end: a link to a missing page becomes text and is listed once."""
+    MD = "---\ntitle: Linker\n---\nSee [[Hand written]] and [[Missing note|the plan]].\n"
+
+    def test_dry_run_lists_the_missing_target_once(self):
+        msg, out, _ = self.run_cli("My Note.md", "--under", "10", "--dry-run", markdown=self.MD)
+        self.assertIsNone(msg, msg)
+        self.assertEqual(out.count("1 link left as text: Missing note\n"), 1)
+        self.assertEqual(self.f.writes, [])
+
+    def test_real_run_writes_text_for_the_missing_link_and_a_link_for_the_other(self):
+        msg, out, _ = self.run_cli("My Note.md", "--under", "10", markdown=self.MD)
+        self.assertIsNone(msg, msg)
+        self.assertEqual(out.count("1 link left as text: Missing note\n"), 1)
+        (page,) = [p for p in self.f.pages.values() if p["title"] == "Linker"]
+        body = page["body"]
+        self.assertIn('ri:content-title="Hand written"', body)
+        self.assertIn("<em>the plan</em>", body)
+        self.assertNotIn('ri:content-title="Missing note"', body)
+
+    def test_no_line_when_every_link_resolves(self):
+        md = "See [[Hand written]].\n"
+        _, out, _ = self.run_cli("My Note.md", "--to", "20", "--dry-run", markdown=md)
+        self.assertNotIn("left as text", out)
+
+
+class UnresolvedLinksLine(unittest.TestCase):
+    """S2.5 (AC-2.5.2): one line naming every link left as text; nothing when none."""
+
+    def line(self, targets):
+        out = io.StringIO()
+        cli_output.PlanPrinter(out).unresolved_links(targets)
+        return out.getvalue()
+
+    def test_wording(self):
+        self.assertEqual(self.line(["Other note"]), "1 link left as text: Other note\n")
+        self.assertEqual(self.line(["A", "B", "C"]), "3 links left as text: A, B, C\n")
+        self.assertEqual(self.line([]), "")
 
 
 class DefaultWiring(unittest.TestCase):

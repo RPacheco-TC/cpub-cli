@@ -31,6 +31,6 @@ from confluence_publisher import (api, checks, config, docset, errors,  # noqa: 
 
 def __getattr__(name):
     """Load ``cli`` (the composition root) and its ``cli_*`` helpers only when asked."""
-    if name in ("cli", "cli_commands"):
+    if name in ("cli", "cli_commands", "cli_output"):
         return importlib.import_module(f"confluence_publisher.{name}")
     raise AttributeError(name)

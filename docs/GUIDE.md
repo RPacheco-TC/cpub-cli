@@ -330,7 +330,7 @@ From then on `cpub "My Note.md"` with no flag publishes the note to that page. U
 
 - **No title prefix** is added in note mode unless you pass `--prefix`.
 - **Diagrams** are rendered into your user cache folder (`~/.cache/confluence-publisher/img`), not next to the note, so nothing new appears in your vault.
-- **Links to other notes** (`[[Other note]]`) become page links by title, as in a doc set; a note that was never published shows as a link to a missing page.
+- **Links to other notes** (`[[Other note]]`) become page links by title when a page with that title exists in the space. A link to a note that is not in Confluence yet is published as its text, in italics, and the run lists it once (`1 link left as text: Other note`, also on `--dry-run`). Publish that note, then this one again, to turn it into a link.
 
 ## Publish the current note from Obsidian
 

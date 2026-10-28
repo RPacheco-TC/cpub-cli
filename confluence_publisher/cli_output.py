@@ -150,6 +150,11 @@ class PlanPrinter:
                         f"{_plural(len(titles), 'page')} are published as code blocks: "
                         + ", ".join(titles))
 
+    def unresolved_links(self, targets):
+        """S2.5: the links that became plain text because no such page exists yet."""
+        if targets:
+            self._print(f"{_plural(len(targets), 'link')} left as text: " + ", ".join(targets))
+
     def frontmatter_hint(self, line):
         """After a publish driven by flags, the line that makes them unnecessary (AC-2.4.2).
 

@@ -191,6 +191,22 @@ class SiteUrl(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 cli_commands.normalize_site_url(text)
 
+    def test_unparsable_urls_get_a_plain_sentence(self):
+        """QA B9 nit: never Python's raw 'Invalid IPv6 URL' text."""
+        for text in ("http://[::1/wiki", "https://[::1/wiki", "[evil.com]",
+                     "https://acme.atlassian.net:99999", "not a url"):
+            with self.subTest(text=text):
+                with self.assertRaises(ValueError) as ctx:
+                    cli_commands.normalize_site_url(text)
+                self.assertEqual(str(ctx.exception), "That is not a valid URL; type the "
+                                                     "address you open Confluence at.")
+
+    def test_user_and_password_are_dropped_port_and_ipv6_kept(self):
+        n = cli_commands.normalize_site_url
+        self.assertEqual(n("https://u:pw@acme.atlassian.net/x"), "https://acme.atlassian.net/wiki")
+        self.assertEqual(n("https://acme.example:8443"), "https://acme.example:8443/wiki")
+        self.assertEqual(n("https://[::1]:8443/wiki"), "https://[::1]:8443/wiki")
+
 
 def check(name_, status_, **facts):
     return checks.CheckResult(name_, status_, facts)

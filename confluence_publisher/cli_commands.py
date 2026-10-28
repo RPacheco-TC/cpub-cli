@@ -19,7 +19,7 @@ import argparse
 import urllib.error
 import urllib.parse
 
-from .errors import CliError, ConfigExists
+from .errors import CliError, ConfigExists, InsecureBaseUrl, PublisherError
 from .config import Credentials
 from .checks import OK, WARN, FAIL, SKIP
 from .cli_errors import ErrorTranslator, CREDENTIAL_LINES, TOKEN_URL, KNOWN_ISSUES_URL
@@ -43,12 +43,24 @@ def normalize_site_url(text):
         raise ValueError("The site URL is empty.")
     if "://" not in text:
         text = "https://" + text
-    url = urllib.parse.urlsplit(text)
+    invalid = "That is not a valid URL; type the address you open Confluence at."
+    try:
+        url = urllib.parse.urlsplit(text)
+        host, port = url.hostname, url.port         # both may raise ValueError (B9)
+    except ValueError:
+        raise ValueError(invalid) from None
     if url.scheme != "https":
         raise ValueError("The site URL must start with https:// (your token is sent to it).")
-    if not url.hostname or " " in text:
-        raise ValueError(f"{text!r} is not a site URL.")
-    return f"https://{url.netloc}/wiki"
+    if not host or " " in text:
+        raise ValueError(invalid)
+    if ":" in host:                                 # an IPv6 literal keeps its brackets
+        host = f"[{host}]"
+    site = f"https://{host}" + (f":{port}" if port else "") + "/wiki"   # never user:pw@
+    try:
+        InsecureBaseUrl.check(site)                 # the same gate Credentials applies
+    except PublisherError:
+        raise ValueError(invalid) from None
+    return site
 
 
 class SetupCommand:

@@ -105,6 +105,8 @@ class Plan:
     mode: str = SET                 # SET, UNDER or TO
     space_info: dict | None = None  # note mode: id, key, name, homepageId
     requested_space_id: str | None = None   # --space, when given (TO mode check)
+    # note mode (S2.5): [[link]] targets with no page in the space, left as text
+    unresolved_links: list = dataclasses.field(default_factory=list)
 
     def rows(self):
         """The v1.1 report rows ``(title, action, diagram_count)``."""
@@ -242,7 +244,7 @@ class Planner:
         parent_id = str(parent_id)
         entries = list(source.entries())
         texts = {id(e): e.text() for e in entries if e.placement != CONTAINER}
-        items, container = [], None
+        items, container, note_doc = [], None, None
         for e in entries:
             title = prefixed_title(prefix, e.title)
             if e.placement == CONTAINER:
@@ -254,6 +256,7 @@ class Planner:
             doc = self.converter.convert(texts[id(e)])      # convert + validate
             if note:
                 self._check_diagrams(source, doc)
+                note_doc = doc
             parent_ref = CONTAINER_REF if e.placement == IN_SITU else parent_id
             items.append(PlanItem(title=title, source=e.source_id or title, action="CREATE",
                                   parent_ref=parent_ref, storage=doc.html,
@@ -270,6 +273,9 @@ class Planner:
         # footer. With --space in set mode nothing extra is read (v1.1 request sequence).
         space_info = self.client.get_space(space_id) if note or requested is None else None
         index = self.client.space_title_index(space_id)
+        unresolved = []
+        if note_doc is not None:            # S2.5: set mode keeps every link (v1.1)
+            unresolved = self._relink(items[0], note_doc, index)
         for it in items:
             pid = index.get(it.title)
             if pid is not None:
@@ -282,7 +288,8 @@ class Planner:
         return Plan(space_id=str(space_id), parent_id=parent_id, prefix=prefix,
                     items=items, parent_info=parent_info, mode=UNDER if note else SET,
                     space_info=space_info,
-                    requested_space_id=None if requested is None else str(requested))
+                    requested_space_id=None if requested is None else str(requested),
+                    unresolved_links=unresolved)
 
     def build_replace(self, note, target_id, space_id=None) -> Plan:
         """Plan a note that replaces exactly one page (``--to``; S2.1).
@@ -312,10 +319,27 @@ class Planner:
         self._apply_info(it, info)
         it.in_subtree = True                # --to: the page given is the fence
         self._read_marker(it)
+        unresolved = []
+        if doc.links:                       # S2.5: one title scan, only if there are links
+            index = self.client.space_title_index(info["spaceId"])
+            unresolved = self._relink(it, doc, index)
         return Plan(space_id=str(info["spaceId"]), parent_id=str(info["parentId"]),
                     prefix=self.converter.prefix, items=[it], parent_info=None, mode=TO,
                     space_info=space_info,
-                    requested_space_id=None if space_id is None else str(space_id))
+                    requested_space_id=None if space_id is None else str(space_id),
+                    unresolved_links=unresolved)
+
+    @staticmethod
+    def _relink(it, doc, index):
+        """Note mode (S2.5): links to titles with no page in the space become text.
+
+        The note's own page counts as existing (a self-link, even on CREATE).
+        :returns: the unresolved targets, distinct, in order of appearance.
+        """
+        def exists(title):
+            return title in index or title == it.title
+        it.storage = doc.relink(exists).html
+        return doc.unresolved(exists)
 
     @staticmethod
     def _check_diagrams(note, doc):
