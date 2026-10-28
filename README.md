@@ -12,10 +12,10 @@ The Markdown is the source of truth; Confluence is a derived view you can re-pub
 ### Quick start: install `cpub`, publish one note
 
 ```bash
-uv tool install git+https://github.com/RPacheco-TC/obx-confluence-obsidian-publisher
+uv tool install git+https://github.com/RPacheco-TC/confluence-obsidian-publisher
 ```
 
-(or `pipx install git+https://github.com/RPacheco-TC/obx-confluence-obsidian-publisher`). That gives you the `cpub` command in any folder; `uv` also provides a suitable Python (3.12+) by itself. Then save your credentials once, for every repo and vault:
+(or `pipx install git+https://github.com/RPacheco-TC/confluence-obsidian-publisher`). That gives you the `cpub` command in any folder; `uv` also provides a suitable Python (3.12+) by itself. Then save your credentials once, for every repo and vault:
 
 ```bash
 cpub setup     # asks for your site URL, email and API token, tests them, saves them
@@ -31,7 +31,9 @@ cpub note.md --to https://your-company.atlassian.net/wiki/spaces/ENG/pages/12345
 
 Create the token at <https://id.atlassian.com/manage-profile/security/api-tokens>. `--to` replaces that page's content (its title is kept); use `--under <page>` instead to create the note as a new child page. Paste the page URL straight from your browser — no space key or id needed. The first publish to a page you did not create with this tool asks you to confirm the hand-over once (see [Safety](#safety)).
 
-Update later with `uv tool upgrade obx-confluence-obsidian-publisher` (or `pipx upgrade …`); `cpub --version` shows what you have. `confluence-publish` is the same command under a longer name. Working from a clone instead? `python3.12 confluence_publish.py …` and `python3.12 -m confluence_publisher …` behave exactly like `cpub …`.
+Installed before 1.4.1? The package was renamed, so reinstall once: `uv tool uninstall obx-confluence-obsidian-publisher`, then `uv tool install git+https://github.com/RPacheco-TC/confluence-obsidian-publisher` (pipx: `pipx uninstall obx-confluence-obsidian-publisher`, then `pipx install git+…`). Your credentials, log and pages are kept.
+
+Update later with `uv tool upgrade confluence-obsidian-publisher` (or `pipx upgrade …`); `cpub --version` shows what you have. `confluence-publish` is the same command under a longer name. Working from a clone instead? `python3.12 confluence_publish.py …` and `python3.12 -m confluence_publisher …` behave exactly like `cpub …`.
 
 ---
 
@@ -85,10 +87,10 @@ Review and edit the Markdown before publishing. It is the source of truth.
 ### 0. Install `cpub`
 
 ```bash
-uv tool install git+https://github.com/RPacheco-TC/obx-confluence-obsidian-publisher
+uv tool install git+https://github.com/RPacheco-TC/confluence-obsidian-publisher
 ```
 
-(or `pipx install git+https://github.com/RPacheco-TC/obx-confluence-obsidian-publisher`). The examples below use `cpub`; from a clone of this repo, `python3.12 confluence_publish.py` works exactly the same.
+(or `pipx install git+https://github.com/RPacheco-TC/confluence-obsidian-publisher`). The examples below use `cpub`; from a clone of this repo, `python3.12 confluence_publish.py` works exactly the same.
 
 ### 1. Set your credentials
 

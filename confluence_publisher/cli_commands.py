@@ -195,7 +195,7 @@ class SetupCommand:
 # --- check (S1.5) ------------------------------------------------------------------------
 
 _MARK = {OK: "✓", WARN: "!", FAIL: "✗", SKIP: "-"}
-_INSTALL = "uv tool install git+https://github.com/RPacheco-TC/obx-confluence-obsidian-publisher"
+_INSTALL = "uv tool install git+https://github.com/RPacheco-TC/confluence-obsidian-publisher"
 _TITLE = {"tls": "Connection", "auth": "Sign-in"}
 
 

@@ -17,6 +17,7 @@ from .errors import InsecureBaseUrl, SpaceNotFound
 #: Content-property key of the ownership marker (S0.3). An accident guard,
 #: not access control: anyone who can edit the page can remove it (D17).
 MARKER_KEY = "cpub-managed"
+#: Frozen: the historical tool id, already stamped on published pages (compared by plan.py).
 MARKER_TOOL = "obx-confluence-obsidian-publisher"
 
 

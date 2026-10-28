@@ -4,7 +4,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "obx-confluence-obsidian-publisher"
+name = "confluence-obsidian-publisher"
 description = "Publish Obsidian-style Markdown notes and doc sets to Confluence Cloud."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -16,7 +16,7 @@ authors = [{ name = "Ronny Pacheco" }]
 keywords = ["confluence", "obsidian", "markdown", "documentation"]
 
 [project.urls]
-Homepage = "https://github.com/RPacheco-TC/obx-confluence-obsidian-publisher"
+Homepage = "https://github.com/RPacheco-TC/confluence-obsidian-publisher"
 
 [project.scripts]
 cpub = "confluence_publisher.cli:main"

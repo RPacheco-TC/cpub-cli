@@ -165,10 +165,10 @@ Once you have reviewed the generated docs, you can publish them to Confluence Cl
 - **The `cpub` command.** Install it once with [`uv`](https://docs.astral.sh/uv/) (it brings a suitable Python by itself):
 
   ```bash
-  uv tool install git+https://github.com/RPacheco-TC/obx-confluence-obsidian-publisher
+  uv tool install git+https://github.com/RPacheco-TC/confluence-obsidian-publisher
   ```
 
-  or with `pipx install git+https://github.com/RPacheco-TC/obx-confluence-obsidian-publisher`. Check it with `cpub --version`; update later with `uv tool upgrade obx-confluence-obsidian-publisher`. (Prefer not to install? From a clone of this repo, `python3.12 confluence_publish.py` does exactly the same; it needs **Python 3.12+** — on macOS the built-in `python3` is 3.9, so `brew install python@3.12`.)
+  or with `pipx install git+https://github.com/RPacheco-TC/confluence-obsidian-publisher`. Check it with `cpub --version`; update later with `uv tool upgrade confluence-obsidian-publisher`. Installed before 1.4.1? The package was renamed, so reinstall once: `uv tool uninstall obx-confluence-obsidian-publisher`, then `uv tool install git+https://github.com/RPacheco-TC/confluence-obsidian-publisher` (pipx: `pipx uninstall obx-confluence-obsidian-publisher`, then `pipx install git+…`). Your credentials, log and pages are kept. (Prefer not to install? From a clone of this repo, `python3.12 confluence_publish.py` does exactly the same; it needs **Python 3.12+** — on macOS the built-in `python3` is 3.9, so `brew install python@3.12`.)
 - **Node.js / `npx`** — only if your docs contain Mermaid diagrams, which get rendered to images. Optional otherwise.
 - A **Confluence Cloud account** and an **API token** — create one at <https://id.atlassian.com/manage-profile/security/api-tokens>.
 
