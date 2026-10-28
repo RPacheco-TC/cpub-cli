@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Generic Markdown -> HTML, used by :mod:`.storage`.
 
 :class:`MarkdownRenderer` turns Obsidian-style Markdown into HTML (inline
@@ -109,12 +108,15 @@ class MermaidRenderer:
     :param img_dir: directory the PNGs are written to (and cached in).
     :param img_rel: path prefix used in the emitted ``<img src>``.
     :param runner: ``subprocess.run``-compatible callable (injectable for tests).
+    :param npx: ``(command, child_env)`` from ``AppDirs.find_executable``, or
+        ``None`` when npx was not found (then nothing is tried and :attr:`skipped`
+        counts the diagrams left unrendered). Default: ``npx`` on ``PATH``.
     """
 
-    def __init__(self, img_dir, img_rel: str = "img", runner=subprocess.run):
-        self.img_dir = Path(img_dir)
-        self.img_rel = img_rel
-        self.runner = runner
+    def __init__(self, img_dir, img_rel: str = "img", runner=subprocess.run,
+                 npx=("npx", None)):
+        self.img_dir, self.img_rel, self.runner, self.npx = Path(img_dir), img_rel, runner, npx
+        self.skipped = 0
 
     def render(self, mermaid_code: str) -> str | None:
         """Render Mermaid code to a PNG via ``mmdc``.
@@ -134,6 +136,9 @@ class MermaidRenderer:
 
         if out_path.exists():
             return f'<img src="{img_rel}/{filename}" alt="Mermaid diagram" />'
+        if self.npx is None:
+            self.skipped += 1
+            return None
 
         img_dir.mkdir(parents=True, exist_ok=True)
 
@@ -142,12 +147,8 @@ class MermaidRenderer:
             tmp_mmd = f.name
 
         try:
-            result = self.runner(
-                ['npx', '-y', '-p', '@mermaid-js/mermaid-cli', 'mmdc',
-                 '-i', tmp_mmd, '-o', str(out_path),
-                 '-b', 'white', '-s', '2', '-q'],
-                capture_output=True, text=True, timeout=30
-            )
+            argv, env = self._command(tmp_mmd, out_path)
+            result = self.runner(argv, capture_output=True, text=True, timeout=30, env=env)
             if result.returncode == 0 and out_path.exists():
                 return f'<img src="{img_rel}/{filename}" alt="Mermaid diagram" />'
             else:
@@ -158,6 +159,12 @@ class MermaidRenderer:
             return None
         finally:
             os.unlink(tmp_mmd)
+
+    def _command(self, mmd_path, out_path):
+        """The ``mmdc`` command line and the environment to run it with."""
+        return ([self.npx[0], '-y', '-p', '@mermaid-js/mermaid-cli', 'mmdc',
+                 '-i', str(mmd_path), '-o', str(out_path), '-b', 'white', '-s', '2', '-q'],
+                self.npx[1])
 
 
 # --------------------------------------------------------------------------- #

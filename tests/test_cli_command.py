@@ -56,7 +56,8 @@ class Injected(unittest.TestCase):
         args = cp.build_parser("cpub").parse_args(["note.md"])
         cmd = cp.PublishCommand.from_args(
             args, io.StringIO(), command="cpub",
-            mode_resolver=cp.ModeResolver(is_file=lambda p: True, is_dir=lambda p: False))
+            mode_resolver=cp.ModeResolver(is_file=lambda p: True, is_dir=lambda p: False,
+                                          targets_of=lambda p: {}))
         with self.assertRaises(SystemExit) as ctx:
             cmd.run()
         msg = str(ctx.exception.code)

@@ -35,10 +35,11 @@ python3.12 confluence_publish.py NOTE.md --to PAGE_URL_OR_ID [--title T] --dry-r
 python3.12 confluence_publish.py NOTE.md --under PAGE_URL_OR_ID [--title T]
 ```
 
-- **Mode is chosen by the path**: a `.md` file → note mode, a folder → set mode (`ModeResolver`, before any I/O). Note mode needs exactly one of `--to` / `--under` (`--parent` is accepted as `--under`); set mode needs `--parent` (or its alias `--under`) and rejects `--to` / `--title`.
+- **Mode is chosen by the path**: a `.md` file → note mode, a folder → set mode (`ModeResolver`, before credentials or any network call). Note mode needs exactly one of `--to` / `--under` (`--parent` is accepted as `--under`), or a frontmatter target (below); set mode needs `--parent` (or its alias `--under`) and rejects `--to` / `--title`.
 - **Every page argument takes an id or a page URL** (`…/spaces/KEY/pages/ID[/slug]`, `…/pages/edit-v2/ID`, `…/viewpage.action?pageId=ID`), parsed by `PageRef.parse` with no network call; folder URLs, `/wiki/x/` short links, unknown forms and other hosts are refused locally.
 - **`--space` is optional** in both modes: the space comes from the page; when given it is checked against the page (refusal on mismatch). With `--space`, set mode makes exactly the v1.1/R2 request sequence.
 - **Note mode**: no title prefix by default; `--to` replaces exactly that page (no title search, never moved, title kept unless `--title`, the space homepage refused); `--under` titles the page `--title` > frontmatter `title:` > file stem and is fenced like a set. The marker source is the note's **filename**; the version comment is `Published from Obsidian: <filename>`. Diagrams render to `AppDirs().note_img_dir` (`$XDG_CACHE_HOME/confluence-publisher/img`), never into the vault.
+- **Frontmatter target (S2.4)**: a note given with no `--to` / `--under` / `--parent` takes its target from its frontmatter: `confluence:` acts as `--to`, `confluence_parent:` as `--under` (`SingleNote.targets()` -> `{"to", "under"}`, read by `ModeResolver` through its injected `targets_of`, only when no flag is given). **Flags win**; both keys at once, or neither key and no flag, is a `CliError`. Values go through `PageRef.parse` like a flag. The tool **never writes the note** (D5): after a real publish made with a flag, on a note with neither key, `PlanPrinter.frontmatter_hint` prints the line to paste (the key mirrors the flag; the value is the by-id `viewpage.action?pageId=` URL, which has no `#` for YAML to eat). The Obsidian one-key recipe (Shell commands plugin, absolute `cpub` path, `{{file_path:absolute}}`, no `--adopt`) is in `docs/GUIDE.md`.
 
 - **Credential lookup order, per variable, first hit wins:** real env vars → `--env-file PATH` → `./.env` (cwd) → `$XDG_CONFIG_HOME/confluence-publisher/.env` (default `~/.config/…`). `CredentialLoader` parses `KEY=VALUE` / `export` / quotes / comments without executing anything; a missing `--env-file` is an error, a missing `./.env` or user file is not; a token file with `mode & 0o077` gets a `chmod 600` warning and the run continues. The `set -a; . ./.env; set +a` workflow still works (env wins).
 
@@ -58,7 +59,7 @@ python3.12 confluence_publish.py NOTE.md --under PAGE_URL_OR_ID [--title T]
 python3.12 -B -m unittest discover -s tests
 ```
 
-There is **no build, no linter, and no dependency install** — pure Python 3.12+ standard library; the only tests are the stdlib `unittest` suite in `tests/` (they import the package once via `tests/_support.py` and drive the CLI through `build_parser()` and `PublishCommand.from_args(...)` with injected fakes — keep them free of subprocesses, temp files and `setattr` patching). The only external runtime dependency is `npx`/Node (for `@mermaid-js/mermaid-cli`), used solely to render Mermaid to PNG; without it diagrams fall back to a styled code block. The minimum is **Python 3.12**: `_check_python()` in `confluence_publisher/__init__.py` exits with a one-line message on older interpreters. Python runs `__init__.py` before any submodule, so both entry points (the shim and `-m`) hit the guard first; keep `__init__.py`, `__main__.py` and the shim parseable by old Pythons (3.9), because the submodules' `X | None` annotations are evaluated at definition time. On macOS the system `python3` is 3.9; use `python3.12` (Homebrew).
+There is **no build, no linter, and no dependency install** — pure Python 3.12+ standard library; the only tests are the stdlib `unittest` suite in `tests/` (they import the package once via `tests/_support.py` and drive the CLI through `build_parser()` and `PublishCommand.from_args(...)` with injected fakes — keep them free of subprocesses, temp files and `setattr` patching). The only external runtime dependency is `npx`/Node (for `@mermaid-js/mermaid-cli`), used solely to render Mermaid to PNG. `AppDirs.find_executable("npx")` looks on `PATH`, then `/opt/homebrew/bin` and `/usr/local/bin` (Obsidian starts commands with a bare `PATH`); `PublishCommand.from_args` passes the result to `StorageConverter(npx=…)`. Without npx, **set mode** falls back to a styled code block and prints one `Warning: npx not found …` line naming the pages (`plan.unrendered_items()`); **note mode refuses** before any write (`DiagramsUnrenderable` → `Error: Diagrams in <note> cannot be rendered (npx not found).`), so a hotkey republish never swaps a page's diagrams for code. The minimum is **Python 3.12**: `_check_python()` in `confluence_publisher/__init__.py` exits with a one-line message on older interpreters. Python runs `__init__.py` before any submodule, so both entry points (the shim and `-m`) hit the guard first; keep `__init__.py`, `__main__.py` and the shim parseable by old Pythons (3.9), because the submodules' `X | None` annotations are evaluated at definition time. On macOS the system `python3` is 3.9; use `python3.12` (Homebrew).
 
 ## Architecture: classes and modules
 
@@ -83,7 +84,8 @@ confluence_publisher/
                    transport): pages, attachments, ancestors, title index, whoami, space lookup,
                    cpub-managed marker
   docset.py        SourceDoc, DocSet (numbered docs + In Situ/, duplicate_titles()),
-                   SingleNote (one .md file; title/filename; frontmatter title: reader)
+                   SingleNote (one .md file; title/filename; frontmatter title: and the
+                   confluence: / confluence_parent: targets)
   pageref.py       PageRef.parse(text, base_url): page id from an id or URL (pure, no network)
   plan.py          PlanItem, Refusal, Plan (mode, space_info, refusals(), handover_items()),
                    Planner(client, converter): build(source, space_id, parent_id) for a set or
@@ -100,7 +102,8 @@ template.yaml      Stage 1 contract (stays at the root)
 
 ```
 markdown_html  <-  storage  <-  plan  <-  executor  <-  cli
-cli_output <- cli_errors <- cli (output/error wording never imports api, plan or config)
+cli_output <- cli_errors <- cli (output/error wording never imports api, plan or config;
+                                  cli_errors reads only docset's frontmatter key names)
 docset <- plan; plan reads only constants from api; cli imports every module (composition root)
 errors: imports nothing; config, api, docset import only errors
 storage, markdown_html: never import api — conversion stays pure and offline

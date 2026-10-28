@@ -16,6 +16,9 @@ import dataclasses
 from .errors import MissingCredentials
 
 
+#: Where Node.js usually lives when an app (e.g. Obsidian) starts cpub with a bare PATH.
+NODE_FALLBACK_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
+
 #: The credentials the publisher needs, in the order they are reported.
 CRED_VARS = ("CONFLUENCE_BASE_URL", "CONFLUENCE_EMAIL", "CONFLUENCE_API_TOKEN")
 
@@ -60,6 +63,14 @@ class Credentials:
         return f"{self.email} @ {self.base_url} (token ****, from {self.token_source})"
 
 
+def _safe(check, path):
+    """``check(path)``, with any ``OSError`` (unreadable, sandboxed) meaning no."""
+    try:
+        return check(path)
+    except OSError:
+        return False
+
+
 class AppDirs:
     """The per-user folders, from the XDG variables (the only place they are read).
 
@@ -91,6 +102,30 @@ class AppDirs:
     def note_img_dir(self) -> pathlib.Path:
         """Where note mode renders Mermaid PNGs, outside the vault (S2.6)."""
         return self.cache_dir / "img"
+
+    def find_executable(self, name, fallback_dirs=NODE_FALLBACK_DIRS, is_exe=None):
+        """Find ``name`` on ``PATH``, then in ``fallback_dirs`` (Obsidian's bare PATH).
+
+        :param is_exe: ``Path -> bool`` (a real executable-file check by default);
+            an ``OSError`` from it (e.g. an unreadable folder) skips that candidate.
+        :returns: ``(absolute path, child_env)``, or ``None`` when not found.
+            ``child_env`` is ``None`` (inherit) for a ``PATH`` hit; for a fallback
+            hit it is the environment with that folder put first on ``PATH``, so
+            the program's ``#!/usr/bin/env node`` finds the ``node`` beside it.
+        :rtype: tuple[str, dict | None] | None
+        """
+        is_exe = is_exe or (lambda p: p.is_file() and os.access(p, os.X_OK))
+        path = self.environ.get("PATH") or ""
+        on_path = [d for d in path.split(os.pathsep) if d]
+        for d in on_path + [d for d in fallback_dirs if d not in on_path]:
+            candidate = pathlib.Path(d) / name
+            if _safe(is_exe, candidate):
+                if d in on_path:
+                    return str(candidate), None
+                env = dict(self.environ)
+                env["PATH"] = os.pathsep.join([d] + on_path)
+                return str(candidate), env
+        return None
 
 
 class CredentialLoader:

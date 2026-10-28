@@ -6,10 +6,12 @@ source, the token to mask) through its constructor; it never reads the
 environment.
 """
 import re
+import shlex
 import ssl
 import urllib.error
 
 from .errors import CliError
+from .docset import TO_KEY as FRONTMATTER_TO, UNDER_KEY as FRONTMATTER_UNDER
 from .cli_output import PlanPrinter, _plural, _need
 
 TOKEN_URL = "https://id.atlassian.com/manage-profile/security/api-tokens"
@@ -20,7 +22,7 @@ KNOWN_ISSUES_URL = ("https://github.com/RPacheco-TC/obx-confluence-obsidian-publ
 CREDENTIAL_LINES = ("CONFLUENCE_BASE_URL=https://your-company.atlassian.net/wiki",
                     "CONFLUENCE_EMAIL=you@your-company.com",
                     "CONFLUENCE_API_TOKEN=<your API token>")
-_SPACE_BY_ID = re.compile(r"/api/v2/spaces/[^/?#]+(?:[?#]|$)")   # GET /spaces/{id}, not ?keys=
+_SPACE_BY_ID =re.compile(r"/api/v2/spaces/[^/?#]+(?:[?#]|$)")   # GET /spaces/{id}, not ?keys=
 
 
 # --- friendly errors (S3.1) -----------------------------------------------------------
@@ -57,6 +59,13 @@ class ErrorTranslator:
             "For example:\n" + "\n".join(f"  {line}" for line in CREDENTIAL_LINES)
             + "\nSearched, in order:\n" + "\n".join(f"- {s}" for s in searched))
 
+    @staticmethod
+    def diagrams_not_renderable(path):
+        """A note with Mermaid and no ``npx``: refused, never published as code (PM #108)."""
+        return CliError(f"Diagrams in {path} cannot be rendered (npx not found).",
+                        "Install Node.js, or add its folder to PATH in the Shell commands "
+                        "plugin.")
+
     # flag combinations (note vs folder)
     @staticmethod
     def no_such_path(path):
@@ -80,14 +89,29 @@ class ErrorTranslator:
                         "child page of it.")
 
     def note_without_target(self, path):
+        arg = shlex.quote(str(path))               # a copy-pasteable command line
         return CliError("Say where this note goes: --to replaces a page, --under creates a "
                         "child page.",
-                        f"{self.command} {path} --to <page URL or id>   or   "
-                        f"{self.command} {path} --under <page URL or id>")
+                        f"{self.command} {arg} --to <page URL or id>   or   "
+                        f"{self.command} {arg} --under <page URL or id>",
+                        "Or put the target in the note's frontmatter, then run "
+                        f"{self.command} {arg} with no flag:\n"
+                        f"  {FRONTMATTER_TO + ':':<19}<page URL or id>   (replace that page)\n"
+                        f"  {FRONTMATTER_UNDER + ':':<19}<page URL or id>   (create a child page)")
+
+    @staticmethod
+    def both_frontmatter_targets(path):
+        """The note names a page to replace and a parent: which one is meant?"""
+        return CliError(f"The frontmatter of {path} has both {FRONTMATTER_TO}: and "
+                        f"{FRONTMATTER_UNDER}:, so it is not clear where the note goes.",
+                        f"Keep only one of them ({FRONTMATTER_TO}: replaces that page, "
+                        f"{FRONTMATTER_UNDER}: creates a child page), or pass --to or "
+                        "--under, which win over the frontmatter.")
 
     def folder_without_parent(self, path):
         return CliError("Say which page to publish this folder under.",
-                        f"{self.command} {path} --parent <page URL or id>   (--under works too)")
+                        f"{self.command} {shlex.quote(str(path))} --parent <page URL or id>"
+                        "   (--under works too)")
 
     @staticmethod
     def to_with_folder():

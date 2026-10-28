@@ -288,9 +288,11 @@ class StorageDocument:
 
     :param html: the storage XHTML fragment.
     :param attachments: ``(filename, filepath)`` pairs to upload before saving.
+    :param unrendered: Mermaid diagrams left as code blocks because npx was not found.
     """
     html: str
     attachments: list = dataclasses.field(default_factory=list)
+    unrendered: int = 0
 
     def validate(self) -> None:
         """Check the body is well-formed XML.
@@ -313,12 +315,15 @@ class StorageConverter:
         :class:`~.markdown_html.MarkdownRenderer` with a
         :class:`~.markdown_html.MermaidRenderer` on ``img_dir`` (none when
         ``img_dir`` is ``None``).
+    :param npx: ``(command, child_env)`` or ``None`` (not found), for that
+        default :class:`~.markdown_html.MermaidRenderer`.
     """
 
-    def __init__(self, prefix: str = "", img_dir=None, img_width=None, renderer=None):
+    def __init__(self, prefix: str = "", img_dir=None, img_width=None, renderer=None,
+                 npx=("npx", None)):
         self.prefix, self.img_dir, self.img_width = prefix, img_dir, img_width
         if renderer is None:
-            mermaid = None if img_dir is None else MermaidRenderer(img_dir, "img")
+            mermaid = None if img_dir is None else MermaidRenderer(img_dir, "img", npx=npx)
             renderer = MarkdownRenderer(mermaid)
         self.renderer = renderer
         self.toc = TocExtractor()
@@ -359,6 +364,8 @@ class StorageConverter:
         md, macros = self.callouts.extract(md)
         if self.img_dir is not None:
             pathlib.Path(self.img_dir).mkdir(parents=True, exist_ok=True)
+        mermaid = getattr(self.renderer, "mermaid", None)
+        skipped = getattr(mermaid, "skipped", 0)
         html = self.renderer.render(md)            # renders Mermaid to PNG when img_dir set
         for token, macro in {**macros, **tocs}.items():
             html = html.replace(f"<p>{token}</p>", macro)
@@ -368,6 +375,6 @@ class StorageConverter:
         html = _code_blocks_to_macro(html)  # last: its CDATA must escape the amp-escape
         for token, macro in links.items():
             html = html.replace(token, macro)
-        doc = StorageDocument(html, atts)
+        doc = StorageDocument(html, atts, getattr(mermaid, "skipped", 0) - skipped)
         doc.validate()
         return doc

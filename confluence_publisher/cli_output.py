@@ -143,6 +143,23 @@ class PlanPrinter:
         if history:
             self._print(f"History: {history}  (earlier versions can be restored here)")
 
+    def unrendered_warning(self, titles):
+        """Set mode without ``npx``: name the pages whose diagrams stay code blocks."""
+        if titles:
+            self._print(f"Warning: npx not found, so the Mermaid diagrams in "
+                        f"{_plural(len(titles), 'page')} are published as code blocks: "
+                        + ", ".join(titles))
+
+    def frontmatter_hint(self, line):
+        """After a publish driven by flags, the line that makes them unnecessary (AC-2.4.2).
+
+        The tool never edits the note (D5): the user pastes the line.
+        """
+        self._print("\nTo publish this note again without flags, paste this line into its "
+                    "frontmatter",
+                    "(the --- block at the top of the note; add one if it has none):",
+                    f"  {line}")
+
 
 # --- hand-over prompt (AC-0.3.3) ----------------------------------------------------
 

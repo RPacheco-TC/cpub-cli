@@ -66,6 +66,9 @@ class FakePlan:
     def handover_items(self):
         return [i for i in self.items if i.action == "UPDATE" and i.managed in ("none", "other")]
 
+    def unrendered_items(self):
+        return [i for i in self.items if getattr(i, "unrendered", 0)]
+
 
 class Fake:
     """Fake collaborators for one run; records calls.

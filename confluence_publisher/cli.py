@@ -65,11 +65,11 @@ import urllib.error
 
 from .errors import (CliError, MissingCredentials, SpaceNotFound, NotAFolder, PlanRefused,
                      HandoverRequired, HandoverDeclined, PlanExecutionError, BadPageRef,
-                     NotAMarkdownFile)
+                     NotAMarkdownFile, DiagramsUnrenderable)
 from .config import CredentialLoader, AppDirs
 from .api import ConfluenceClient, HttpTransport
 from .storage import StorageConverter
-from .docset import DocSet, SingleNote
+from .docset import DocSet, SingleNote, TO_KEY, UNDER_KEY
 from .pageref import PageRef
 from .plan import Planner, DEFAULT_MAX_UPDATES
 from .executor import PlanExecutor
@@ -91,6 +91,11 @@ examples:
   note.md --to PAGE     replace that page's content (its title is kept)
   note.md --under PAGE  create a child page of PAGE (re-running updates it)
   docs/ --parent PAGE   publish the folder as child pages of PAGE
+
+A note can keep its target in its frontmatter, so {cmd} note.md needs no flag:
+  confluence: PAGE         same as --to PAGE
+  confluence_parent: PAGE  same as --under PAGE
+A flag on the command line wins over the frontmatter. The tool never edits the note.
 
 Safety: every run is planned and checked before anything is written. It only
 updates pages it published itself from the same source; any other page needs
@@ -164,11 +169,14 @@ class RunMode:
     :param page: the page reference as typed (id or URL): the ``--to`` target,
         or the parent for ``--under`` / ``--parent``.
     :param replace: ``True`` for ``--to`` (replace that page).
+    :param from_frontmatter: ``True`` when the target came from the note's
+        ``confluence:`` / ``confluence_parent:`` key instead of a flag (S2.4).
     """
     kind: str
     path: str
     page: str
     replace: bool = False
+    from_frontmatter: bool = False
 
 
 class ModeResolver:
@@ -176,11 +184,15 @@ class ModeResolver:
 
     :param is_file: ``path -> bool`` (default :meth:`pathlib.Path.is_file`).
     :param is_dir: ``path -> bool`` (default :meth:`pathlib.Path.is_dir`).
+    :param targets_of: ``path -> {"to": str|None, "under": str|None}``, the note's
+        frontmatter targets (default :meth:`~.docset.SingleNote.targets`); read only
+        for a note given with no ``--to`` / ``--under`` / ``--parent``.
     """
 
-    def __init__(self, is_file=None, is_dir=None):
+    def __init__(self, is_file=None, is_dir=None, targets_of=None):
         self.is_file = is_file or (lambda p: pathlib.Path(p).is_file())
         self.is_dir = is_dir or (lambda p: pathlib.Path(p).is_dir())
+        self.targets_of = targets_of or (lambda p: SingleNote.from_file(p).targets())
 
     def resolve(self, args, errors=None):
         """:rtype: RunMode
@@ -206,9 +218,18 @@ class ModeResolver:
         under = args.under or args.parent
         if args.to and under:
             raise err.to_and_under()
-        if not (args.to or under):
+        if args.to or under:                       # flags win over the frontmatter
+            return RunMode("note", path, args.to or under, replace=bool(args.to))
+        try:
+            targets = self.targets_of(path)
+        except NotAMarkdownFile:
+            raise err.not_markdown(path) from None
+        to, under = targets.get("to"), targets.get("under")
+        if to and under:
+            raise err.both_frontmatter_targets(path)
+        if not (to or under):
             raise err.note_without_target(path)
-        return RunMode("note", path, args.to or under, replace=bool(args.to))
+        return RunMode("note", path, to or under, replace=bool(to), from_frontmatter=True)
 
 
 class ArgumentParserFactory:
@@ -316,11 +337,14 @@ class PublishCommand:
             pass fakes this way; nothing is patched).
         """
         out = out or sys.stdout
+        app_dirs = overrides.get("app_dirs") or AppDirs()
         wiring = dict(
             credential_loader=CredentialLoader(),
             client_factory=lambda creds: ConfluenceClient(creds, HttpTransport()),
             docset_loader=DocSet.from_folder,
-            planner_factory=cls._real_planner,
+            planner_factory=lambda client, args: cls._real_planner(
+                client, args, app_dirs.find_executable("npx")),
+            app_dirs=app_dirs,
             executor_factory=PlanExecutor,
             prompt=HandoverPrompt(out),
         )
@@ -328,9 +352,12 @@ class PublishCommand:
         return cls(args, out=out, **wiring)
 
     @staticmethod
-    def _real_planner(client, args):
+    def _real_planner(client, args, npx):
+        """:param npx: ``(command, child_env)`` or ``None`` when npx was not found
+        (searched on PATH, then the usual Node folders: Obsidian starts commands
+        with a bare PATH)."""
         img_dir = args.img_dir or str(pathlib.Path(args.path) / ".img")
-        return Planner(client, StorageConverter(args.prefix, img_dir, args.img_width))
+        return Planner(client, StorageConverter(args.prefix, img_dir, args.img_width, npx=npx))
 
     def run(self):
         """Run once; expected failures exit with one sentence and a ``Fix:`` line.
@@ -401,6 +428,8 @@ class PublishCommand:
             return planner.build(source, space_id, a.parent)
         except urllib.error.HTTPError as e:
             raise self.errors.read(e, stage) from None
+        except DiagramsUnrenderable as e:          # a note never trades diagrams for code
+            raise ErrorTranslator.diagrams_not_renderable(e.note) from None
 
     def _page_link(self, webui, page_id, credentials):
         if webui:
@@ -421,17 +450,31 @@ class PublishCommand:
         source = self._docset() if mode.kind == "set" else self._note(mode)
         client = self.client_factory(credentials)
         plan = self._plan(client, source, mode)
-        self._show_and_write(plan, mode, client, credentials)
+        self._show_and_write(plan, mode, client, credentials, source)
 
     def _space_label(self, plan):
         info = getattr(plan, "space_info", None) or {}
         return self.args.space or info.get("key") or f"id {plan.space_id}"
 
-    def _show_and_write(self, plan, mode, client, credentials):
+    def _frontmatter_line(self, mode, note, credentials):
+        """The ``key: value`` line equivalent to this run's flag, if the note has no key yet.
+
+        It mirrors the flag that was used (``--to`` -> ``confluence:``, ``--under`` ->
+        ``confluence_parent:``) with the page as a by-id URL, which never contains a
+        ``#`` that YAML would read as a comment.
+        """
+        targets = note.targets()
+        if mode.from_frontmatter or targets.get("to") or targets.get("under"):
+            return None                            # the note already names a target
+        key = TO_KEY if mode.replace else UNDER_KEY
+        return f"{key}: {self._page_link(None, self.args.parent, credentials)}"
+
+    def _show_and_write(self, plan, mode, client, credentials, source=None):
         a, p = self.args, self.printer
         refusals = plan.refusals(a.max_updates)
         note = mode.kind == "note"
         parent_link = self._page_link((plan.parent_info or {}).get("webui"), a.parent, credentials)
+        p.unrendered_warning([it.title for it in plan.unrendered_items()])   # set mode only
 
         if a.dry_run or refusals:
             p.table(plan.items)
@@ -480,6 +523,9 @@ class PublishCommand:
                           self._page_link(None, pid, credentials),   # by id: title may change
                           history=f"{credentials.base_url}/pages/viewpreviousversions.action"
                                   f"?pageId={pid}")
+            line = self._frontmatter_line(mode, source, credentials)
+            if line:
+                p.frontmatter_hint(line)
         else:
             p.footer(len(plan.items), "published", a, parent_link, self._space_label(plan))
 

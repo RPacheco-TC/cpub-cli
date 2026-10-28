@@ -1,4 +1,4 @@
-"""Phase 1b library: page refs, AppDirs, SingleNote, --under and --to planning.
+"""Note library: page refs, AppDirs, SingleNote (+ S2.4 targets), --under and --to.
 
 Offline and in-process: notes are in-memory ``SingleNote`` objects and
 Confluence is the injected ``FakeConfluence`` transport. Run from the repo root::
@@ -114,6 +114,49 @@ class Note(unittest.TestCase):
         for path in ("tests/test_note.py", "no/such/note.md", "tests"):
             with self.subTest(path=path), self.assertRaises(errors.NotAMarkdownFile):
                 docset.SingleNote.from_file(path)
+
+
+class FrontmatterTarget(unittest.TestCase):
+    """S2.4: ``confluence:`` acts as --to, ``confluence_parent:`` as --under."""
+
+    NONE = {"to": None, "under": None}
+
+    def targets(self, fm):
+        return note(md=f"---\n{fm}\n---\n# Body\n").targets()
+
+    def test_each_key_alone(self):
+        url = f"{BASE}/spaces/ENG/pages/42/Title"
+        self.assertEqual(self.targets(f"confluence: {url}"), {"to": url, "under": None})
+        self.assertEqual(self.targets("confluence_parent: '10'"), {"to": None, "under": "10"})
+        self.assertEqual((docset.TO_KEY, docset.UNDER_KEY), ("confluence", "confluence_parent"))
+
+    def test_both_keys_are_returned_to_the_caller_to_refuse(self):
+        got = self.targets("confluence_parent: 10\ntitle: T\nconfluence: \"42\"")
+        self.assertEqual(got, {"to": "42", "under": "10"})
+
+    def test_absent_empty_list_or_no_frontmatter_means_no_target(self):
+        for md in ("# no frontmatter\nconfluence: 42\n",
+                   "---\nconfluence:\nconfluence_parent: ''\n---\n",
+                   "---\nconfluence:\n  - 42\n---\n",
+                   "---\nconfluence: 42\n"):                 # unclosed: not frontmatter
+            with self.subTest(md=md):
+                self.assertEqual(note(md=md).targets(), self.NONE)
+
+    def test_crlf_and_key_case(self):
+        md = "---\r\nconfluence: 42\r\nConfluence_Parent: 10\r\n---\r\nx"
+        self.assertEqual(note(md=md).targets(), {"to": "42", "under": None})
+
+    def test_value_parses_like_a_flag(self):
+        url = f"{BASE}/spaces/ENG/pages/42/Title?focusedCommentId=1#c"
+        ref = self.targets(f"confluence: {url}")["to"]
+        self.assertEqual(pageref.PageRef.parse(ref, BASE).page_id, "42")
+        ref = self.targets(f"confluence: {BASE}/spaces/ENG/folder/5")["to"]
+        with self.assertRaises(errors.FolderPageRef):
+            pageref.PageRef.parse(ref, BASE)
+
+    def test_reading_the_target_never_touches_the_file(self):
+        n = note(md="---\nconfluence: 42\n---\nx", name="no/such/dir/n.md")
+        self.assertEqual(n.targets()["to"], "42")           # in memory: no file I/O
 
 
 class Under(unittest.TestCase):

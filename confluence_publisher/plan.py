@@ -10,6 +10,7 @@ import dataclasses
 
 from .api import MARKER_TOOL
 from .docset import CONTAINER, IN_SITU
+from .errors import DiagramsUnrenderable
 from .storage import prefixed_title
 
 #: Body of the "In Situ" container page (v1.1 text, byte-identical).
@@ -46,6 +47,7 @@ class PlanItem:
     # message of a CREATE's second save (after its diagrams are attached)
     resave_message: str = "link diagram attachments"
     old_size: int | None = None     # current body, UTF-8 bytes (note mode UPDATE only)
+    unrendered: int = 0             # Mermaid diagrams left as code (npx not found)
 
     @property
     def new_size(self):
@@ -107,6 +109,14 @@ class Plan:
     def rows(self):
         """The v1.1 report rows ``(title, action, diagram_count)``."""
         return [(it.title, it.action, it.diagrams) for it in self.items]
+
+    def unrendered_items(self):
+        """Items whose Mermaid diagrams stay code blocks because npx was not found
+        (set mode only: a note is refused instead). For a one-line warning.
+
+        :rtype: list[PlanItem]
+        """
+        return [it for it in self.items if it.unrendered]
 
     def handover_items(self):
         """The planned UPDATEs that overwrite a page this tool did not publish
@@ -242,12 +252,15 @@ class Planner:
                 items.append(container)
                 continue
             doc = self.converter.convert(texts[id(e)])      # convert + validate
+            if note:
+                self._check_diagrams(source, doc)
             parent_ref = CONTAINER_REF if e.placement == IN_SITU else parent_id
             items.append(PlanItem(title=title, source=e.source_id or title, action="CREATE",
                                   parent_ref=parent_ref, storage=doc.html,
                                   attachments=doc.attachments,
                                   version_message=self._message(source),
-                                  resave_message=self._resave_message(source)))
+                                  resave_message=self._resave_message(source),
+                                  unrendered=doc.unrendered))
 
         parent_info = self.client.get_page_info(parent_id)
         requested = space_id
@@ -286,6 +299,7 @@ class Planner:
         """
         (entry,) = list(note.entries())
         doc = self.converter.convert(entry.text())          # convert + validate first
+        self._check_diagrams(note, doc)
         target_id = str(target_id)
         info = self.client.get_page_info(target_id, with_body=True)
         space_info = self.client.get_space(info["spaceId"])
@@ -302,6 +316,12 @@ class Planner:
                     prefix=self.converter.prefix, items=[it], parent_info=None, mode=TO,
                     space_info=space_info,
                     requested_space_id=None if space_id is None else str(space_id))
+
+    @staticmethod
+    def _check_diagrams(note, doc):
+        """A note never publishes its diagrams as code: refused before any read."""
+        if doc.unrendered:
+            raise DiagramsUnrenderable(note.filename, doc.unrendered)
 
     @staticmethod
     def _message(source):

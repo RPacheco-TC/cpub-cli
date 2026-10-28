@@ -21,6 +21,11 @@ TOP = "top"              # directly under --parent
 CONTAINER = "container"  # the In Situ container page, under --parent
 IN_SITU = "in-situ"      # under the In Situ container
 
+#: Frontmatter keys naming a note's target (S2.4): the page to replace (``--to``)
+#: and the parent to publish under (``--under``). Read only, never written (D5).
+TO_KEY = "confluence"
+UNDER_KEY = "confluence_parent"
+
 
 @dataclasses.dataclass(frozen=True)
 class SourceDoc:
@@ -194,6 +199,20 @@ class SingleNote:
         if self.title:
             return self.title
         return read_frontmatter(self.text()).get("title") or pathlib.Path(self.path).stem
+
+    def targets(self) -> dict:
+        """The targets the note names in its frontmatter (S2.4, AC-2.4.1).
+
+        ``{"to": <confluence: value>, "under": <confluence_parent: value>}``,
+        each the raw string (quotes stripped), or ``None`` when the key is
+        missing, empty or a list. Not parsed: the caller runs the value through
+        ``PageRef.parse`` like a flag. Both keys may be set; refusing that is
+        the caller's decision. Nothing is ever written to the note (D5).
+
+        :rtype: dict[str, str | None]
+        """
+        fm = read_frontmatter(self.text())
+        return {"to": fm.get(TO_KEY) or None, "under": fm.get(UNDER_KEY) or None}
 
     def entries(self):
         yield SourceDoc(self.resolved_title(), self.text(), pathlib.Path(self.path),

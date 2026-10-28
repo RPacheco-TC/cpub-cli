@@ -99,6 +99,20 @@ class HandoverDeclined(PublisherError):
         self.items = items
 
 
+class DiagramsUnrenderable(PublisherError):
+    """Note mode: the note has Mermaid diagrams and no ``npx`` to render them.
+
+    Raised before any request, so a hotkey republish never swaps a page's
+    diagrams for code blocks. Set mode keeps the fallback (with a warning).
+
+    :param note: the note's filename.
+    :param count: how many diagrams could not be rendered.
+    """
+    def __init__(self, note, count):
+        super().__init__(f"Diagrams in {note} cannot be rendered (npx not found).")
+        self.note, self.count = note, count
+
+
 class PlanExecutionError(PublisherError):
     """A write failed mid-run; ``report`` says what was and was not written."""
     def __init__(self, report):

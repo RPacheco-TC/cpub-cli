@@ -1,4 +1,4 @@
-"""Single-note publish from the command line (S1.2, S2.1, S2.2, S2.3, S2.6), in-process.
+"""Single-note publish from the command line (S1.2, S2.1-S2.4, S2.6), in-process.
 
 Every run goes through :class:`~confluence_publisher.cli.PublishCommand` with
 the real :class:`~confluence_publisher.plan.Planner` and
@@ -13,7 +13,7 @@ import io
 import types
 import unittest
 
-from _support import cli, config, docset, plan, storage
+from _support import cli, config, docset, markdown_html, plan, storage
 from _fake_confluence import FakeConfluence, BASE
 
 TOKEN = "s3cr3t-token-value"
@@ -37,8 +37,10 @@ class NoteRun(unittest.TestCase):
         self.f.add("10", "TEST", parent="1")
         self.f.add("20", "Hand written", parent="10", version=7)   # unmanaged
         self.planner_args = []
+        self.converter = None                    # a test may inject one (e.g. without npx)
 
-    def run_cli(self, *argv, tty=False, answer=None, markdown=NOTE_MD, app_dirs=None):
+    def run_cli(self, *argv, tty=False, answer=None, markdown=NOTE_MD, app_dirs=None,
+                docs_md="a\n"):
         """Run one command; return (exit message or None, output, prompts)."""
         out, prompts = io.StringIO(), []
 
@@ -52,16 +54,18 @@ class NoteRun(unittest.TestCase):
 
         def planner(client, args):
             self.planner_args.append(args)
-            return plan.Planner(client, storage.StorageConverter(args.prefix, None, None))
+            return plan.Planner(client, self.converter
+                                or storage.StorageConverter(args.prefix, None, None))
 
         args = cli.build_parser().parse_args(list(argv))
         cmd = cli.PublishCommand.from_args(
             args, out, credential_loader=Loader(), client_factory=self.f.client,
-            mode_resolver=cli.ModeResolver(is_file=lambda p: p.endswith(".md"),
-                                           is_dir=lambda p: p == "docs"),
+            mode_resolver=cli.ModeResolver(
+                is_file=lambda p: p.endswith(".md"), is_dir=lambda p: p == "docs",
+                targets_of=lambda p: docset.SingleNote(p, markdown=markdown).targets()),
             note_loader=lambda path, title: docset.SingleNote(path, title=title,
                                                               markdown=markdown),
-            docset_loader=lambda path: docset.DocSet((docset.SourceDoc("01 - A", "a\n"),)),
+            docset_loader=lambda path: docset.DocSet((docset.SourceDoc("01 - A", docs_md),)),
             planner_factory=planner,
             app_dirs=app_dirs or types.SimpleNamespace(note_img_dir="/cache/cp/img"),
             prompt=cli.HandoverPrompt(out, ask=ask, stdin=FakeStdin(tty)))
@@ -175,6 +179,125 @@ class CreateWithUnder(NoteRun):
         self.assertIn("already exists outside", msg)
         self.assertEqual(self.f.writes, [])
         self.assertNotIn("Replace preview", out)                  # F2: no preview if refused
+
+
+class FrontmatterTarget(NoteRun):
+    """S2.4: the note remembers its target; the tool never edits the note."""
+    PASTE = "To publish this note again without flags, paste this line into its frontmatter"
+
+    def test_confluence_key_replaces_that_page_with_no_flag(self):
+        md = f"---\nconfluence: {URL_20}\n---\nbody\n"
+        msg, out, _ = self.run_cli("My Note.md", "--adopt", markdown=md)
+        self.assertIsNone(msg, msg)
+        self.assertIn("UPDATE  0        Hand written", out)
+        self.assertEqual(self.f.pages["20"]["parentId"], "10")
+        self.assertNotIn(self.PASTE, out)                  # the note already has its key
+
+    def test_confluence_parent_key_creates_a_child(self):
+        msg, out, _ = self.run_cli("My Note.md", markdown="---\nconfluence_parent: 10\n---\nx\n")
+        self.assertIsNone(msg, msg)
+        self.assertIn("CREATE  0        My Note", out)
+        self.assertNotIn(self.PASTE, out)
+
+    def test_a_flag_wins_over_the_key(self):
+        md = "---\nconfluence: 1\n---\nbody\n"             # 1 is the homepage: refused
+        msg, out, _ = self.run_cli("My Note.md", "--to", "20", "--adopt", markdown=md)
+        self.assertIsNone(msg, msg)
+        self.assertIn("UPDATE  0        Hand written", out)
+
+    def test_a_bad_value_gets_the_flag_error_before_any_request(self):
+        md = f"---\nconfluence: {BASE}/x/AbCd\n---\nbody\n"
+        msg, _, _ = self.run_cli("My Note.md", markdown=md)
+        self.assert_friendly(msg)
+        self.assertIn("short", msg.lower())
+        self.assertEqual(self.f.calls, [])
+
+    def test_both_keys_are_refused_before_any_request(self):
+        md = "---\nconfluence: 20\nconfluence_parent: 10\n---\nbody\n"
+        msg, _, _ = self.run_cli("My Note.md", markdown=md)
+        self.assert_friendly(msg)
+        self.assertIn("both confluence: and confluence_parent:", msg)
+        self.assertEqual(self.f.calls, [])
+
+    def test_publish_with_to_prints_the_line_to_paste(self):
+        msg, out, _ = self.run_cli("My Note.md", "--to", URL_20, "--adopt")
+        self.assertIsNone(msg, msg)
+        self.assertIn(f"{self.PASTE}\n(the --- block at the top of the note; add one if it has "
+                      f"none):\n  confluence: {BASE}/pages/viewpage.action?pageId=20\n", out)
+
+    def test_publish_with_under_prints_the_parent_line(self):
+        msg, out, _ = self.run_cli("My Note.md", "--under", "10")
+        self.assertIsNone(msg, msg)
+        self.assertIn(f"  confluence_parent: {BASE}/pages/viewpage.action?pageId=10\n", out)
+
+    def test_no_line_on_a_dry_run(self):
+        _, out, _ = self.run_cli("My Note.md", "--to", "20", "--dry-run")
+        self.assertNotIn(self.PASTE, out)
+
+
+MERMAID_MD = "# Hi\n\n```mermaid\ngraph TD\n  A --> B\n```\n"
+
+
+class NoRunner:
+    def __call__(self, argv, **kw):
+        raise AssertionError("npx must not be run when it was not found")
+
+
+class DiagramsWithoutNpx(NoteRun):
+    """PM #108: under Obsidian's bare PATH a note never trades its diagrams for code."""
+
+    def setUp(self):
+        super().setUp()
+        mermaid = markdown_html.MermaidRenderer("/nonexistent/cpub-img", npx=None,
+                                                runner=NoRunner())
+        self.converter = storage.StorageConverter(
+            renderer=markdown_html.MarkdownRenderer(mermaid))
+
+    def test_a_note_with_mermaid_is_refused_before_any_write(self):
+        for flag, page in (("--to", "20"), ("--under", "10")):
+            with self.subTest(flag=flag):
+                msg, out, _ = self.run_cli("My Note.md", flag, page, "--adopt",
+                                           markdown=MERMAID_MD)
+                self.assert_friendly(msg)
+                self.assertEqual(msg.splitlines()[:2], [
+                    "Error: Diagrams in My Note.md cannot be rendered (npx not found).",
+                    "Fix: Install Node.js, or add its folder to PATH in the Shell commands "
+                    "plugin."])
+                self.assertEqual(self.f.writes, [])
+                self.assertNotIn("Replace preview", out)
+
+    def test_a_note_without_mermaid_still_publishes(self):
+        msg, _, _ = self.run_cli("My Note.md", "--to", "20", "--adopt")
+        self.assertIsNone(msg, msg)
+
+    def test_a_folder_publishes_with_a_one_line_warning(self):
+        msg, out, _ = self.run_cli("docs", "--parent", "10", "--dry-run", docs_md=MERMAID_MD)
+        self.assertIsNone(msg, msg)
+        self.assertIn("Warning: npx not found, so the Mermaid diagrams in 1 page are "
+                      "published as code blocks: 01 - A\n", out)
+        self.assertLess(out.index("Warning: npx"), out.index("ACTION"))
+
+    def test_no_warning_when_nothing_is_skipped(self):
+        _, out, _ = self.run_cli("docs", "--parent", "10", "--dry-run")
+        self.assertNotIn("Warning: npx", out)
+
+
+class DefaultWiring(unittest.TestCase):
+    def test_the_real_planner_gets_the_npx_that_app_dirs_found(self):
+        class Dirs:
+            note_img_dir = "/cache/cp/img"
+            def __init__(self):
+                self.asked = []
+            def find_executable(self, name):
+                self.asked.append(name)
+                return ("/opt/homebrew/bin/npx", {"PATH": "/opt/homebrew/bin"})
+        dirs = Dirs()
+        args = cli.build_parser("cpub").parse_args(["docs", "--parent", "1"])
+        cmd = cli.PublishCommand.from_args(args, io.StringIO(), app_dirs=dirs)
+        planner = cmd.planner_factory(object(), args)
+        self.assertEqual(dirs.asked, ["npx"])
+        self.assertEqual(planner.converter.renderer.mermaid.npx,
+                         ("/opt/homebrew/bin/npx", {"PATH": "/opt/homebrew/bin"}))
 
 
 class PageReferences(NoteRun):

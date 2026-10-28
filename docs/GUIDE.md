@@ -294,11 +294,68 @@ Take over and replace 1 page(s) you did not publish? Type the number 1 to confir
 
 Type the number to go ahead; anything else writes nothing. From then on the page is marked as published from that note, so republishing it never asks again. In a script or an editor hotkey there is no prompt: the run refuses unless you add `--adopt`. The space's **home page** can never be replaced with `--to`.
 
+### Let the note remember its page
+
+Instead of typing `--to` every time, write the target into the note's frontmatter (the `---` block at the top of the note, the one Obsidian shows as **Properties**):
+
+```yaml
+---
+confluence: https://your-company.atlassian.net/wiki/spaces/ENG/pages/123456789
+---
+```
+
+From then on `cpub "My Note.md"` with no flag publishes the note to that page. Use `confluence_parent:` instead to mean `--under` (create, then update, a child of that page). Either key takes a page URL or id, checked exactly like the flag.
+
+- A flag on the command line **wins** over the frontmatter, so you can still send a note somewhere else for one run.
+- A note with **both** keys is refused: keep the one you mean.
+- The tool **never edits your note**. After a publish made with `--to` or `--under`, on a note that has neither key yet, it prints the line to paste:
+
+  ```
+  To publish this note again without flags, paste this line into its frontmatter
+  (the --- block at the top of the note; add one if it has none):
+    confluence: https://your-company.atlassian.net/wiki/pages/viewpage.action?pageId=123456789
+  ```
+
 ### Good to know
 
 - **No title prefix** is added in note mode unless you pass `--prefix`.
 - **Diagrams** are rendered into your user cache folder (`~/.cache/confluence-publisher/img`), not next to the note, so nothing new appears in your vault.
 - **Links to other notes** (`[[Other note]]`) become page links by title, as in a doc set; a note that was never published shows as a link to a missing page.
+
+## Publish the current note from Obsidian
+
+With the target in the frontmatter, one hotkey can publish the note you are looking at. This uses the **Shell commands** community plugin; nothing is installed into the vault besides the plugin.
+
+1. **Publish the note once from a terminal**, so its page is marked as published from that note:
+
+   ```bash
+   cpub "/path/to/vault/My Note.md" --to "<page URL>"
+   ```
+
+   Type the page count when asked (the hand-over), then paste the `confluence:` line it prints into the note's frontmatter.
+
+2. **Find the full path of `cpub`**. Obsidian does not start commands with your terminal's `PATH`, so a bare `cpub` is usually "command not found":
+
+   ```bash
+   which cpub        # with uv or pipx: /Users/<you>/.local/bin/cpub
+   ```
+
+3. In Obsidian: **Settings → Community plugins → Browse**, install and enable **Shell commands**.
+4. In its settings, **New shell command**, and enter the full path from step 2 followed by the note variable (no quotes; the plugin escapes the path itself):
+
+   ```
+   /Users/<you>/.local/bin/cpub {{file_path:absolute}}
+   ```
+
+5. Under that command's **Output**, show **stdout** and **stderr** in a notification, so you see the result and any `Error:` / `Fix:` lines.
+6. **Settings → Hotkeys**, search for the command and bind a key.
+
+Press the key in any note that has a `confluence:` (or `confluence_parent:`) line: it publishes that note to its page.
+
+- **The hotkey never takes a page over.** There is no `--adopt` in the command, on purpose: from a hotkey nobody can type the confirmation, so a page that this tool did not publish from this note is refused, with nothing written. It can only update pages you already handed over in step 1. If you see the hand-over error, run the command from a terminal once.
+- **Diagrams need `npx`** (Node.js). The command looks for it on `PATH`, then in `/opt/homebrew/bin` and `/usr/local/bin`. If Node.js is installed elsewhere (nvm, for example), add its folder to `PATH` in the Shell commands plugin settings (its **Environments** tab can extend `PATH`). If no `npx` is found, a note with Mermaid diagrams is **refused** rather than published with its diagrams turned into code: `Error: Diagrams in My Note.md cannot be rendered (npx not found).`
+- **Credentials**: keep them in `~/.config/confluence-publisher/.env`. Obsidian runs the command from the vault folder, so a `./.env` in your project folder is not found from there.
+- To see what would happen first, make a second command with `--dry-run` at the end.
 
 ---
 
