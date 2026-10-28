@@ -334,7 +334,7 @@ From then on `cpub "My Note.md"` with no flag publishes the note to that page. U
 
 ## Publish the current note from Obsidian
 
-With the target in the frontmatter, one command (or one hotkey) publishes the note you are looking at. This uses **Confluence Publisher**, our own Obsidian plugin (desktop only). It runs `cpub` for you: it never reads, stores or sends your Confluence credentials and makes no network request itself.
+With the target in the frontmatter, one command (or one hotkey) publishes the note you are looking at. This uses **[Confluence Publisher](https://github.com/RPacheco-TC/confluence-publisher-obsidian)**, our own Obsidian plugin (desktop only). It runs `cpub` for you: it never reads, stores or sends your Confluence credentials and makes no network request itself.
 
 1. **Install `cpub` 1.4.0 or newer** and save your credentials (`cpub setup`), as above. Keep them in `~/.config/confluence-publisher/.env`: Obsidian runs `cpub` from the vault folder, so a `./.env` in your project folder is not found from there.
 
@@ -346,7 +346,7 @@ With the target in the frontmatter, one command (or one hotkey) publishes the no
 
    Type the page count when asked (the hand-over), then paste the `confluence:` line it prints into the note's frontmatter.
 
-3. **Install the plugin.** Once it is listed in Obsidian's community store: **Settings → Community plugins → Browse**, search for **Confluence Publisher**, install and enable it. Until then, copy its `manifest.json`, `main.js` and `styles.css` into `<vault>/.obsidian/plugins/confluence-publisher/` and enable it under **Settings → Community plugins**.
+3. **Install the plugin.** Once it is listed in Obsidian's community store: **Settings → Community plugins → Browse**, search for **Confluence Publisher**, install and enable it. Until then, install it by hand: download `main.js`, `manifest.json` and `styles.css` from its [latest release](https://github.com/RPacheco-TC/confluence-publisher-obsidian/releases/latest) (0.1.0), put them in `<vault>/.obsidian/plugins/confluence-publisher/` (create the folder), then enable **Confluence Publisher** under **Settings → Community plugins** (you may need to reload the list or restart Obsidian).
 
 4. Run **Check cpub setup** from the command palette. The plugin finds `cpub` by itself in `~/.local/bin` (uv, pipx), `/opt/homebrew/bin` or `/usr/local/bin`; if yours is elsewhere, set **cpub path** in the plugin's settings (`cpub check` in a terminal prints the full path). If `cpub` is missing or older than 1.4.0, the plugin says so and shows the install line.
 
