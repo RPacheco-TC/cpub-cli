@@ -173,7 +173,17 @@ Once you have reviewed the generated docs, you can publish them to Confluence Cl
 - A **Confluence Cloud account** and an **API token** — create one at <https://id.atlassian.com/manage-profile/security/api-tokens>.
 
 ### Step 1 — Set your credentials
-With `cpub` installed, the simplest is one user-wide file, `~/.config/confluence-publisher/.env` (see the tip below), so every folder can publish. In a clone you can also copy `.env.example` to `.env` and fill in your values. The publisher reads it by itself, so there is nothing to load into your shell:
+With `cpub` installed, run:
+
+```bash
+cpub setup
+```
+
+It asks for your site URL (`https://your-company.atlassian.net` is enough), your email and your API token (hidden while you type), signs in once to test them, and saves them to `~/.config/confluence-publisher/.env`, readable only by you, so every folder can publish. A token Confluence rejects is asked for again and never saved; an existing file is only replaced if you type `yes`.
+
+Then `cpub check` shows what works, one line each: Python, where the credentials come from, the connection (and its TLS certificate), the sign-in, `npx` for diagrams, and the full path of `cpub`. It never writes anything.
+
+Prefer to write the file yourself? In a clone you can also copy `.env.example` to `.env` and fill in your values. The publisher reads it by itself, so there is nothing to load into your shell:
 
 ```bash
 cp .env.example .env       # edit .env: base URL, email, API token
@@ -334,11 +344,13 @@ With the target in the frontmatter, one hotkey can publish the note you are look
 
    Type the page count when asked (the hand-over), then paste the `confluence:` line it prints into the note's frontmatter.
 
-2. **Find the full path of `cpub`**. Obsidian does not start commands with your terminal's `PATH`, so a bare `cpub` is usually "command not found":
+2. **Find the full path of `cpub`**. Obsidian does not start commands with your terminal's `PATH`, so a bare `cpub` is usually "command not found". `cpub check` prints it on its last line:
 
-   ```bash
-   which cpub        # with uv or pipx: /Users/<you>/.local/bin/cpub
    ```
+   ✓ cpub is /Users/<you>/.local/bin/cpub  (use this full path in the Obsidian hotkey)
+   ```
+
+   (`which cpub` gives the same path; with uv or pipx it is `/Users/<you>/.local/bin/cpub`.)
 
 3. In Obsidian: **Settings → Community plugins → Browse**, install and enable **Shell commands**.
 4. In its settings, **New shell command**, and enter the full path from step 2 followed by the note variable (no quotes; the plugin escapes the path itself):

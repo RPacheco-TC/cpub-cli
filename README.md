@@ -18,16 +18,11 @@ uv tool install git+https://github.com/RPacheco-TC/obx-confluence-obsidian-publi
 (or `pipx install git+https://github.com/RPacheco-TC/obx-confluence-obsidian-publisher`). That gives you the `cpub` command in any folder; `uv` also provides a suitable Python (3.12+) by itself. Then save your credentials once, for every repo and vault:
 
 ```bash
-mkdir -p ~/.config/confluence-publisher
-cat > ~/.config/confluence-publisher/.env <<'EOF'
-CONFLUENCE_BASE_URL=https://your-company.atlassian.net/wiki
-CONFLUENCE_EMAIL=you@your-company.com
-CONFLUENCE_API_TOKEN=your-api-token
-EOF
-chmod 600 ~/.config/confluence-publisher/.env
+cpub setup     # asks for your site URL, email and API token, tests them, saves them
+cpub check     # optional: shows what works (credentials, connection, sign-in, npx)
 ```
 
-and publish:
+`cpub setup` signs in once with what you typed and saves only credentials that Confluence accepted, to `~/.config/confluence-publisher/.env` (readable only by you). Then publish:
 
 ```bash
 cpub note.md --to https://your-company.atlassian.net/wiki/spaces/ENG/pages/123456789 --dry-run
@@ -97,12 +92,18 @@ uv tool install git+https://github.com/RPacheco-TC/obx-confluence-obsidian-publi
 
 ### 1. Set your credentials
 
-With `cpub` installed, put the three values in `~/.config/confluence-publisher/.env` (see the [quick start](#quick-start-install-cpub-publish-one-note)) so every folder can publish. In a clone you can also use a local `.env`:
+Run `cpub setup` once. It asks for the site URL (`https://your-company.atlassian.net` is enough; `/wiki` is added), your email and an [API token](https://id.atlassian.com/manage-profile/security/api-tokens) (typed hidden), signs in once to test them, and saves them to `~/.config/confluence-publisher/.env` with mode `600`, so every folder can publish. A rejected token is asked for again and never saved; an existing file is only replaced if you type `yes`. In a script or a pipe it does not ask anything: it prints the file format instead.
+
+`cpub check` then shows, one line each, what works and what to fix: Python, where the credentials were found, the connection and its TLS certificate, the sign-in, `npx` for diagrams (a warning only), and the full path of `cpub` for the [Obsidian hotkey](docs/GUIDE.md#publish-the-current-note-from-obsidian). It writes nothing and exits with status 1 when something must be fixed.
+
+You can also write the file yourself, or, in a clone, use a local `.env`:
 
 ```bash
 cp .env.example .env      # then edit .env with your base URL, email, and token
 chmod 600 .env            # only you can read it (never commit .env)
 ```
+
+`setup` and `check` are commands, so a file or folder actually named `setup` or `check` is published as `./setup` or `./check`.
 
 That's it: the publisher finds the credentials itself. No `set -a; . ./.env; set +a` is needed any more (it still works). The base URL for Confluence Cloud ends in `/wiki`, for example `https://your-company.atlassian.net/wiki`.
 
@@ -265,7 +266,7 @@ If you prefer the python.org build, fix it once by installing its CA bundle (rep
 /Library/Frameworks/Python.framework/Versions/3.x/bin/python3 -m pip install --upgrade certifi
 ```
 
-Verify with: `python3 -c "import urllib.request; urllib.request.urlopen('https://www.atlassian.com'); print('TLS OK')"`. Do **not** work around this by disabling certificate verification — that removes the security the check provides.
+Verify with `cpub check` (the "Connection" line), or: `python3 -c "import urllib.request; urllib.request.urlopen('https://www.atlassian.com'); print('TLS OK')"`. Do **not** work around this by disabling certificate verification — that removes the security the check provides.
 
 **Mermaid diagrams show "Preview not available" in Confluence edit mode.**
 (and vanish after you save from the editor). Pages published by older versions of this tool saved the page body *before* uploading its diagrams, so Confluence never linked the images to their attachments; view mode hides this, the editor does not. Current versions upload first. **Fix an affected page by re-running the same publish command once** — the UPDATE re-saves the body after the attachments exist, which links them. If a diagram already vanished after an editor save, the re-publish restores it from the Markdown. See [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md) for details.

@@ -122,12 +122,46 @@ class LoadEnv(unittest.TestCase):
 
     def test_load_fills_only_unset(self):
         """(was apply_env) env values are kept; files only fill what is unset."""
-        fs = {"/work/.env": f"{URL}=u\n{MAIL}=m\n{TOK}=tok1\n"}
+        fs = {"/work/.env": f"{URL}=https://u/wiki\n{MAIL}=m\n{TOK}=tok1\n"}
         loader = cp.CredentialLoader(cwd=CWD, environ={**ENV, MAIL: "keep"}, read_file=files(fs))
         creds = loader.load()
-        self.assertEqual((creds.base_url, creds.email, creds.token), ("u", "keep", "tok1"))
+        self.assertEqual((creds.base_url, creds.email, creds.token),
+                         ("https://u/wiki", "keep", "tok1"))
         self.assertEqual(creds.sources, {URL: "/work/.env", MAIL: "environment",
                                          TOK: "/work/.env"})
+
+    def test_http_base_url_is_refused_naming_its_source_never_the_token(self):
+        """B8: no Credentials object can carry a non-https URL; nothing is sent."""
+        for url in ("http://acme.atlassian.net/wiki", "HTTP://h/wiki", "ftp://h/wiki",
+                    "acme.atlassian.net/wiki", "http://user:pw@h:8080/wiki",
+                    "http://localhost:8080/wiki", "http://127.0.0.1.evil.com/wiki",
+                    "http://[::2]/wiki"):
+            fs = {"/work/.env": f"{URL}={url}\n{MAIL}=m\n{TOK}=s3cr3t-tok\n"}
+            loader = cp.CredentialLoader(cwd=CWD, environ=dict(ENV), read_file=files(fs))
+            with self.subTest(url=url), self.assertRaises(errors.InsecureBaseUrl) as cm:
+                loader.load()
+            e = cm.exception
+            self.assertIsInstance(e, errors.PublisherError)
+            self.assertEqual(e.source, "/work/.env")
+            for secret in ("s3cr3t-tok", "pw"):
+                self.assertNotIn(secret, str(e) + e.host)
+        self.assertEqual(cm.exception.url, "http://[::2]/wiki")
+        e = errors.InsecureBaseUrl("http://user:pw@h:8080/wiki")
+        self.assertEqual(str(e), "CONFLUENCE_BASE_URL must start with https:// "
+                                 "(found http://h:8080).")
+        self.assertEqual(cp.Credentials("HTTPS://H/wiki", "m", "t").base_url, "HTTPS://H/wiki")
+
+    def test_http_to_a_loopback_ip_literal_is_allowed(self):
+        """D29: a local test server only; the name localhost stays refused."""
+        for url in ("http://127.0.0.1:8080/wiki", "http://127.5.5.5/wiki",
+                    "http://[::1]:9000/wiki", "http://user@127.0.0.1/wiki",
+                    "HTTP://127.0.0.1/wiki"):
+            with self.subTest(url=url):
+                self.assertEqual(cp.Credentials(url, "m", "t").base_url, url)
+        for url in ("http://localhost/wiki", "http://127.0.0.1.evil.com/wiki",
+                    "http://10.0.0.1/wiki", "http://user@localhost@127.0.0.1.evil.com/"):
+            with self.subTest(url=url), self.assertRaises(errors.InsecureBaseUrl):
+                cp.Credentials(url, "m", "t")
 
     def test_load_raises_missing_credentials_with_searched_files(self):
         loader = cp.CredentialLoader(cwd=CWD, environ=dict(ENV), read_file=files({}))

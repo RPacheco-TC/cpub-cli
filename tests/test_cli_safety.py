@@ -168,8 +168,7 @@ def assert_friendly(tc, msg):
     tc.assertTrue(lines[1].startswith("Fix: "), msg)
     tc.assertNotIn("Traceback", msg)
     tc.assertNotIn(TOKEN, msg)
-    for word in ("cpub", "setup"):
-        tc.assertNotIn(word, msg.lower())
+    tc.assertNotIn("--yes", msg)                  # D4: there is no --yes
 
 
 class Parser(unittest.TestCase):
@@ -214,7 +213,10 @@ class Parser(unittest.TestCase):
         self.assertIn("  python3.12 confluence_publish.py docs/ --parent ", text)
         self.assertLess(text.index("examples:"), text.index("options:"))
         self.assertIn("~/.config/confluence-publisher/.env", text)
-        for word in ("cpub", "setup", "--yes"):
+        # story B: setup/check are listed under the command that was started (D26)
+        self.assertIn("  python3.12 confluence_publish.py setup   ", text)
+        self.assertIn("  python3.12 confluence_publish.py check   ", text)
+        for word in ("cpub", "--yes"):
             self.assertNotIn(word, text)
 
 

@@ -3,7 +3,8 @@
 :class:`CredentialLoader` and :class:`AppDirs` are the **only** places in the
 package that read ``os.environ``. The loader returns an immutable
 :class:`Credentials` that is passed to :class:`~.api.ConfluenceClient`.
-Nothing here executes anything or writes.
+Nothing here executes anything; the only writer is :class:`CredentialWriter`
+(``cpub setup``, S1.4), through an injectable file system.
 """
 import os
 import re
@@ -11,9 +12,11 @@ import sys
 import errno
 import base64
 import pathlib
+import tempfile
+import contextlib
 import dataclasses
 
-from .errors import MissingCredentials
+from .errors import ConfigExists, InsecureBaseUrl, MissingCredentials
 
 
 #: Where Node.js usually lives when an app (e.g. Obsidian) starts cpub with a bare PATH.
@@ -32,7 +35,9 @@ _ENV_DQ_ESCAPES = {"n": "\n", "t": "\t", '"': '"', "\\": "\\", "$": "$"}
 class Credentials:
     """The three values that authenticate every Confluence call.
 
-    :param base_url: site URL ending in ``/wiki`` (a trailing ``/`` is dropped).
+    :param base_url: site URL ending in ``/wiki`` (a trailing ``/`` is dropped); it
+        must pass :meth:`~.errors.InsecureBaseUrl.allows` (``https://``, or ``http://``
+        to a loopback IP literal) or :class:`~.errors.InsecureBaseUrl` is raised (B8).
     :param email: the Atlassian account email.
     :param token: the API token; never shown by ``repr`` or :meth:`masked`.
     :param sources: ``{var: "environment" | file path}``, where each value came from.
@@ -44,6 +49,8 @@ class Credentials:
 
     def __post_init__(self):
         object.__setattr__(self, "base_url", self.base_url.rstrip("/"))
+        if not InsecureBaseUrl.allows(self.base_url):   # B8/D29: none can be insecure
+            raise InsecureBaseUrl(self.base_url, self.sources)
 
     def auth_header(self) -> str:
         """The HTTP Basic ``Authorization`` header value."""
@@ -82,11 +89,16 @@ class AppDirs:
     def __init__(self, environ=None):
         self.environ = os.environ if environ is None else environ
 
+    @property
+    def home(self) -> pathlib.Path:
+        """The user's home folder (``$HOME``)."""
+        return pathlib.Path(self.environ.get("HOME") or os.path.expanduser("~"))
+
     def _base(self, var, default):
         xdg = self.environ.get(var)
         if xdg:
             return pathlib.Path(xdg)
-        return pathlib.Path(self.environ.get("HOME") or os.path.expanduser("~")) / default
+        return self.home / default
 
     @property
     def config_dir(self) -> pathlib.Path:
@@ -247,6 +259,7 @@ class CredentialLoader:
 
         :raises FileNotFoundError: if ``env_file`` is given and does not exist.
         :raises MissingCredentials: naming the unset variables and the files searched.
+        :raises InsecureBaseUrl: if ``CONFLUENCE_BASE_URL`` is not allowed (B8/D29).
         """
         resolved = self.resolve(env_file)
         missing = tuple(v for v in CRED_VARS if v not in resolved)
@@ -265,3 +278,97 @@ class CredentialLoader:
     @staticmethod
     def _warn_stderr(msg):
         print(msg, file=sys.stderr)
+
+
+class PrivateFiles:
+    """The real file operations :class:`CredentialWriter` needs (tests inject a fake)."""
+
+    @staticmethod
+    def exists(path) -> bool:
+        return pathlib.Path(path).exists()
+
+    @staticmethod
+    def make_private_dir(path):
+        """Create ``path`` (and parents) and set it to ``700``."""
+        path = pathlib.Path(path)
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(path, 0o700)
+
+    @staticmethod
+    def write_private(path, text):
+        """Write ``text`` atomically as a ``600`` file: a temp file beside it, then
+        ``os.replace``, so a crash never leaves a half-written credentials file."""
+        path = pathlib.Path(path)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")   # mode 600
+        try:
+            with os.fdopen(fd, "w") as f:
+                os.fchmod(f.fileno(), 0o600)
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp)
+            raise
+
+
+class CredentialWriter:
+    """Save verified credentials to the user config file (``cpub setup``, S1.4).
+
+    The file is ``AppDirs().config_dir / ".env"`` (lookup path 4), in the
+    ``KEY="value"`` format :class:`CredentialLoader` reads; folder ``700``,
+    file ``600``, written atomically.
+
+    :param app_dirs: an :class:`AppDirs` (for ``config_dir``); a real one when ``None``.
+    :param files: the file operations (default :class:`PrivateFiles`).
+    :param today: date written in the header comment (``None``: no date).
+    """
+
+    HEADER = "# Confluence credentials for cpub, written by `cpub setup`. Keep it private."
+
+    def __init__(self, app_dirs=None, files=None, today=None):
+        self.app_dirs = app_dirs or AppDirs()
+        self.files = files or PrivateFiles()
+        self.today = today
+
+    @property
+    def path(self) -> pathlib.Path:
+        return pathlib.Path(self.app_dirs.config_dir) / ".env"
+
+    def exists(self) -> bool:
+        """Whether a config file is already there (ask before overwriting it)."""
+        return self.files.exists(self.path)
+
+    def render(self, credentials) -> str:
+        """The file text; every value double-quoted so the loader reads it back exactly.
+
+        :raises ValueError: for a value containing a line break.
+        """
+        lines = [self.HEADER + (f" ({self.today})" if self.today else "")]
+        values = (credentials.base_url, credentials.email, credentials.token)
+        for var, value in zip(CRED_VARS, values):
+            if "\n" in value or "\r" in value:
+                raise ValueError(f"{var} contains a line break")
+            quoted = value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$")
+            lines.append(f'{var}="{quoted}"')
+        return "\n".join(lines) + "\n"
+
+    def write(self, credentials, identity, overwrite=False) -> pathlib.Path:
+        """Write the file; return its path.
+
+        :param credentials: the :class:`Credentials` to save.
+        :param identity: the :meth:`~.api.ConfluenceClient.whoami` result for
+            them: credentials that did not authenticate are never saved.
+        :param overwrite: replace an existing file (the user confirmed it).
+        :raises ValueError: if ``identity`` is not authenticated.
+        :raises ConfigExists: if the file exists and ``overwrite`` is false.
+        """
+        if not (identity or {}).get("authenticated"):
+            raise ValueError("refusing to save credentials that did not authenticate")
+        text = self.render(credentials)
+        if not overwrite and self.exists():
+            raise ConfigExists(self.path)
+        self.files.make_private_dir(self.path.parent)
+        self.files.write_private(self.path, text)
+        return self.path

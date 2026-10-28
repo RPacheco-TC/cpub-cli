@@ -25,12 +25,12 @@ def _load():
 
 
 pkg = _load()
-from confluence_publisher import (api, config, docset, errors, executor,  # noqa: E402
-                                  markdown_html, pageref, plan, storage)
+from confluence_publisher import (api, checks, config, docset, errors,  # noqa: E402
+                                  executor, markdown_html, pageref, plan, storage)
 
 
 def __getattr__(name):
-    """Load ``cli`` (the composition root) only when a test asks for it."""
-    if name == "cli":
-        return importlib.import_module("confluence_publisher.cli")
+    """Load ``cli`` (the composition root) and its ``cli_*`` helpers only when asked."""
+    if name in ("cli", "cli_commands"):
+        return importlib.import_module(f"confluence_publisher.{name}")
     raise AttributeError(name)

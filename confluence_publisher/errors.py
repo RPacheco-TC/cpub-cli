@@ -3,6 +3,8 @@
 Every expected failure derives from :class:`PublisherError`, so the CLI can
 translate them in one place.
 """
+import ipaddress
+import urllib.parse
 
 
 class PublisherError(Exception):
@@ -111,6 +113,60 @@ class DiagramsUnrenderable(PublisherError):
     def __init__(self, note, count):
         super().__init__(f"Diagrams in {note} cannot be rendered (npx not found).")
         self.note, self.count = note, count
+
+
+class InsecureBaseUrl(PublisherError):
+    """A Confluence URL the token may not travel on: refused before any request (B8).
+
+    The rule (D29) is :meth:`allows`: ``https://``, or ``http://`` to a loopback
+    IP literal (a local test server). Anything else would send the Basic-auth
+    token in clear text.
+
+    :param url: the URL as configured (kept raw on ``.url``).
+    :param sources: ``{var: "environment" | path}`` of the credentials, if known.
+    ``.scheme``, ``.host`` (hostname[:port], never any ``user:pass@`` part) and
+    ``.source`` (where ``CONFLUENCE_BASE_URL`` came from, or ``None``) are set.
+    """
+
+    @staticmethod
+    def allows(url) -> bool:
+        """``https://``; or ``http://`` whose host is a loopback IP **literal**
+        (127.0.0.0/8, ``[::1]``). The name ``localhost`` is refused: a hosts
+        file can point it anywhere."""
+        parts = urllib.parse.urlsplit(str(url))
+        if parts.scheme == "https":
+            return True
+        if parts.scheme != "http":
+            return False
+        try:
+            return ipaddress.ip_address(parts.hostname or "").is_loopback
+        except ValueError:
+            return False
+
+    def __init__(self, url, sources=None):
+        self.url = str(url)
+        parts = urllib.parse.urlsplit(str(url))
+        self.scheme = parts.scheme or ""
+        try:
+            port = parts.port
+        except ValueError:
+            port = None
+        self.host = (parts.hostname or "") + (f":{port}" if port else "")
+        self.sources = dict(sources or {})
+        self.source = self.sources.get("CONFLUENCE_BASE_URL")
+        found = f"{self.scheme}://{self.host}" if self.scheme else "no scheme"
+        super().__init__(f"CONFLUENCE_BASE_URL must start with https:// (found {found}).")
+        # .url is the raw value: it may hold a user:pass@ part, so print .host instead
+
+
+class ConfigExists(PublisherError):
+    """``cpub setup``: the user config file exists and overwriting was not confirmed.
+
+    :param path: the existing file.
+    """
+    def __init__(self, path):
+        super().__init__(f"{path} already exists.")
+        self.path = path
 
 
 class PlanExecutionError(PublisherError):

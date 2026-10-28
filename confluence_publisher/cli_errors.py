@@ -49,13 +49,13 @@ class ErrorTranslator:
                         "Pass the path of an existing .env file, or drop --env-file to use "
                         "./.env or ~/.config/confluence-publisher/.env.")
 
-    @staticmethod
-    def missing_credentials(missing, searched):
+    def missing_credentials(self, missing, searched):
         searched = ["environment variables"] + [str(p) for p in searched]
         return CliError(
             "Missing Confluence credential(s): " + ", ".join(missing) + ".",
-            "Add them to ~/.config/confluence-publisher/.env (or ./.env), one KEY=VALUE per "
-            f"line as below, or export them; create a token at {TOKEN_URL}.",
+            f"Run {self.command} setup, which asks for them and saves them; or add them to "
+            "~/.config/confluence-publisher/.env (or ./.env), one KEY=VALUE per line as below, "
+            f"or export them; create a token at {TOKEN_URL}.",
             "For example:\n" + "\n".join(f"  {line}" for line in CREDENTIAL_LINES)
             + "\nSearched, in order:\n" + "\n".join(f"- {s}" for s in searched))
 
@@ -65,6 +65,21 @@ class ErrorTranslator:
         return CliError(f"Diagrams in {path} cannot be rendered (npx not found).",
                         "Install Node.js, or add its folder to PATH in the Shell commands "
                         "plugin.")
+
+    @staticmethod
+    def insecure_base_url(scheme, host, source):
+        """B8: a non-https base URL would send the token in clear text; nothing was sent.
+
+        :param scheme: the URL's scheme ("" when it has none).
+        :param host: ``hostname[:port]`` only (never a ``user:password@`` part).
+        :param source: ``"environment"``, a file path, or ``None``.
+        """
+        found = f"{scheme}://{host}" if scheme else "no https:// at the start"
+        where = ("the environment variable CONFLUENCE_BASE_URL"
+                 if source in (None, "environment") else str(source))
+        target = f"https://{host}/wiki" if host else "https://your-company.atlassian.net/wiki"
+        return CliError(f"CONFLUENCE_BASE_URL must start with https:// (found {found}).",
+                        f"Change it to {target} in {where}. Nothing was sent.")
 
     # flag combinations (note vs folder)
     @staticmethod

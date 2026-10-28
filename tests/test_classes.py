@@ -73,6 +73,37 @@ class Transport(unittest.TestCase):
             t.request("GET", "https://example.invalid/wiki/api/v2/pages/1")
         self.assertEqual(cm.exception.detail, '{"message": "parent is a folder"}')
 
+    def test_transport_refuses_plain_http_before_any_request(self):
+        """B8 defence in depth: even a URL built elsewhere never goes out over http."""
+        def urlopen(request, timeout):
+            raise AssertionError("a request was sent")
+        t = api.HttpTransport(urlopen=urlopen)
+        for url in ("http://example.invalid/wiki/x", "http://localhost/wiki/x",
+                    "http://127.0.0.1.evil.com/wiki/x"):
+            with self.subTest(url=url), self.assertRaises(errors.InsecureBaseUrl):
+                t.request("GET", url, headers={"Authorization": "Basic c2VjcmV0"})
+
+    def test_transport_allows_http_to_a_loopback_ip_literal(self):
+        """D29: QA's local recorder on http://127.0.0.1 keeps working."""
+        sent = []
+
+        class Resp(io.BytesIO):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def urlopen(request, timeout):
+            sent.append(request.full_url)
+            return Resp(b"{}")
+        t = api.HttpTransport(urlopen=urlopen)
+        for url in ("http://127.0.0.1:8080/wiki/x", "http://[::1]/wiki/x"):
+            self.assertEqual(t.request("GET", url), (200, {}))
+        self.assertEqual(len(sent), 2)
+
     def test_client_sends_auth_and_accept_headers(self):
         seen = []
 

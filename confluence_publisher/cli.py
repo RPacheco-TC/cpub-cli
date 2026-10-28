@@ -58,6 +58,8 @@ constructor, so tests pass fakes instead of patching module attributes.
    links, and ``--prune`` of pages whose source was removed.
 """
 import sys
+import getpass
+import datetime
 import pathlib
 import argparse
 import dataclasses
@@ -65,8 +67,9 @@ import urllib.error
 
 from .errors import (CliError, MissingCredentials, SpaceNotFound, NotAFolder, PlanRefused,
                      HandoverRequired, HandoverDeclined, PlanExecutionError, BadPageRef,
-                     NotAMarkdownFile, DiagramsUnrenderable)
-from .config import CredentialLoader, AppDirs
+                     NotAMarkdownFile, DiagramsUnrenderable, InsecureBaseUrl)
+from .config import CredentialLoader, AppDirs, CredentialWriter
+from .checks import EnvironmentCheck
 from .api import ConfluenceClient, HttpTransport
 from .storage import StorageConverter
 from .docset import DocSet, SingleNote, TO_KEY, UNDER_KEY
@@ -75,6 +78,7 @@ from .plan import Planner, DEFAULT_MAX_UPDATES
 from .executor import PlanExecutor
 from .cli_output import PlanPrinter, HandoverPrompt
 from .cli_errors import ErrorTranslator, CREDENTIAL_LINES, TOKEN_URL
+from .cli_commands import SetupCommand, CheckReport, CheckCommand
 from . import __version__
 
 
@@ -91,6 +95,10 @@ examples:
   note.md --to PAGE     replace that page's content (its title is kept)
   note.md --under PAGE  create a child page of PAGE (re-running updates it)
   docs/ --parent PAGE   publish the folder as child pages of PAGE
+
+  {cmd} setup   ask for your credentials, test them, save them (first run)
+  {cmd} check   show what works: Python, credentials, connection, sign-in, npx
+  (setup and check are commands: publish a file or folder named so as ./setup)
 
 A note can keep its target in its frontmatter, so {cmd} note.md needs no flag:
   confluence: PAGE         same as --to PAGE
@@ -372,6 +380,9 @@ class PublishCommand:
             raise SystemExit(self.errors.mask(str(self.errors.http(e)))) from None
         except urllib.error.URLError as e:
             raise SystemExit(self.errors.mask(str(self.errors.url(e)))) from None
+        except InsecureBaseUrl as e:                # the transport's own check (B8)
+            err = ErrorTranslator.insecure_base_url(e.scheme, e.host, e.source)
+            raise SystemExit(self.errors.mask(str(err))) from None
 
     # -- steps --
 
@@ -382,7 +393,9 @@ class PublishCommand:
         except FileNotFoundError as e:
             raise ErrorTranslator.env_file_missing(e.filename or a.env_file) from None
         except MissingCredentials as e:
-            raise ErrorTranslator.missing_credentials(e.missing, e.searched) from None
+            raise self.errors.missing_credentials(e.missing, e.searched) from None
+        except InsecureBaseUrl as e:               # B8: refused before any client exists
+            raise ErrorTranslator.insecure_base_url(e.scheme, e.host, e.source) from None
         self.errors = ErrorTranslator(a, credentials, command=self.command)
         return credentials
 
@@ -530,6 +543,54 @@ class PublishCommand:
             p.footer(len(plan.items), "published", a, parent_link, self._space_label(plan))
 
 
+# --- setup and check (reserved first words, D2) -----------------------------------------
+
+#: First words that name a command instead of a path to publish.
+SUBCOMMANDS = ("setup", "check")
+
+
+def subcommand_parser(name, command):
+    """The small parser of ``setup`` / ``check``."""
+    if name == "setup":
+        ap = argparse.ArgumentParser(
+            prog=f"{command} setup",
+            description="Ask for the Confluence site URL, your email and an API token, test "
+                        "them with one read-only call, and save them to "
+                        "~/.config/confluence-publisher/.env (mode 600). Nothing is saved "
+                        "unless Confluence accepts them.")
+        return ap
+    ap = argparse.ArgumentParser(
+        prog=f"{command} check",
+        description="Check Python, the credentials (and where they come from), the "
+                    "connection and its TLS certificate, the sign-in and npx, and print the "
+                    "full path of the command for the Obsidian hotkey. Writes nothing; exit "
+                    "status 1 if something must be fixed.")
+    ap.add_argument("--env-file", default=None, metavar="PATH",
+                    help="read credentials from this .env file first")
+    return ap
+
+
+def build_subcommand(name, args, out=None, command=CommandName.FALLBACK, **overrides):
+    """Composition root of ``setup`` / ``check``: the real collaborators, or ``overrides``."""
+    out = out or sys.stdout
+    client_factory = overrides.pop(
+        "client_factory", lambda creds: ConfluenceClient(creds, HttpTransport()))
+    if name == "setup":
+        wiring = dict(out=out, ask=input, ask_secret=getpass.getpass, stdin=sys.stdin,
+                      client_factory=client_factory, command=command)
+        wiring.update(overrides)
+        if "writer" not in wiring:
+            wiring["writer"] = CredentialWriter(AppDirs(),
+                                                today=datetime.date.today().isoformat())
+        return SetupCommand(**wiring)
+    wiring = dict(report=CheckReport(out, command))
+    wiring.update(overrides)
+    if "checks" not in wiring:
+        wiring["checks"] = EnvironmentCheck(CredentialLoader(), client_factory, AppDirs(),
+                                            sys.argv[0])
+    return CheckCommand(args, **wiring)
+
+
 # --- entry points ------------------------------------------------------------------------
 
 def build_parser(command=None):
@@ -546,6 +607,12 @@ def main(argv=None, out=None):
     :raises SystemExit: on any expected failure (exit status 1) or bad arguments (2).
     """
     command = CommandName.resolve(sys.argv[0])
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] in SUBCOMMANDS:          # a path named so is given as ./setup
+        name = argv[0]
+        args = subcommand_parser(name, command).parse_args(argv[1:])
+        build_subcommand(name, args, out, command).run()
+        return
     args = build_parser(command).parse_args(argv)
     PublishCommand.from_args(args, out, command=command).run()
 

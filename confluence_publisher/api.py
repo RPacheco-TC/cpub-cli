@@ -11,7 +11,7 @@ import pathlib
 import datetime
 import urllib.request, urllib.error, urllib.parse
 
-from .errors import SpaceNotFound
+from .errors import InsecureBaseUrl, SpaceNotFound
 
 
 #: Content-property key of the ownership marker (S0.3). An accident guard,
@@ -42,7 +42,11 @@ class HttpTransport:
         :returns: a ``(status_code, parsed_json)`` pair (``{}`` if the body is empty).
         :rtype: tuple[int, dict]
         :raises urllib.error.HTTPError: with Confluence's response body on ``.detail``.
+        :raises InsecureBaseUrl: for a URL the token may not travel on; nothing is
+            sent (B8/D29, the same rule as :class:`~.config.Credentials`).
         """
+        if not InsecureBaseUrl.allows(url):
+            raise InsecureBaseUrl(url)
         r = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
         try:
             with self.urlopen(r, timeout=self.timeout) as resp:

@@ -50,7 +50,9 @@ python3.12 confluence_publish.py NOTE.md --under PAGE_URL_OR_ID [--title T]
 - `--img-width PX` (optional) sets `ac:width` on every Mermaid `ac:image`; unset means no attribute, i.e. unchanged output.
 - `--max-updates N` (default 25) caps how many *existing* pages one run may UPDATE; creates don't count.
 - `--adopt` hands over every page listed for hand-over, for this run only, without the typed prompt (non-interactive runs). There is deliberately **no `--yes`** — do not add one (decision D4).
-- **The command name follows how the tool was started (D26)**: `cpub` / `confluence-publish` (console scripts), `python3.12 confluence_publish.py` (the shim), `python3.12 -m confluence_publisher` (`-m`). `CommandName.resolve(sys.argv[0])` in `cli.py` decides it **once** and `main()` injects it into `ArgumentParserFactory` (usage, examples, `--version`) and `ErrorTranslator` (every `Fix:` line); no command string is hard-coded anywhere else (a test checks). There is no `setup` / `check` subcommand yet; do not mention them.
+- **The command name follows how the tool was started (D26)**: `cpub` / `confluence-publish` (console scripts), `python3.12 confluence_publish.py` (the shim), `python3.12 -m confluence_publisher` (`-m`). `CommandName.resolve(sys.argv[0])` in `cli.py` decides it **once** and `main()` injects it into `ArgumentParserFactory` (usage, examples, `--version`) and `ErrorTranslator` (every `Fix:` line); no command string is hard-coded anywhere else (a test checks). `setup` and `check` are reserved first words (D2): `main()` dispatches them to `subcommand_parser` + `build_subcommand` (their composition root, in `cli.py`); a path named so is given as `./setup`.
+- **`setup` (S1.4)** is `cli_commands.SetupCommand`: refuses a non-TTY stdin (prints the KEY= format, never hangs); asks before replacing an existing file (`yes`); site URL normalised to `https://host/wiki` (`normalize_site_url`, https only); hidden token via injected `getpass`; tests with one `whoami` (re-asks email/token up to 3 times on rejection; network/TLS/404 stop at once); `config.CredentialWriter.write(creds, identity, overwrite)` refuses unauthenticated credentials and writes atomically (dir 700, file 600). Only `whoami` is ever called.
+- **`check` (S1.5)**: `checks.EnvironmentCheck(...).run(env_file)` returns raw `CheckResult(name, status, facts)` (`ok`/`warn`/`fail`/`skip`) for python, credentials, tls, auth, npx, cpub; `cli_commands.CheckReport` words them (`✓ ! ✗ -` plus `Fix:`), and `CheckCommand` exits 1 only on a `fail` (npx and a missing installed `cpub` are warnings). Writes nothing; TLS verification is never turned off.
 - **Packaging:** `pyproject.toml` (setuptools, `requires-python >= 3.12`, **no dependencies**, the `confluence_publisher` package only — no tests, docs or shim in the wheel). The version has one source, `confluence_publisher.__version__` (D27); scripts `cpub` and `confluence-publish` → `confluence_publisher.cli:main`.
 
 ```bash
@@ -75,6 +77,10 @@ confluence_publisher/
                    ArgumentParserFactory (+ --version), ModeResolver -> RunMode; main()
   cli_output.py    PlanPrinter (table, ownership, replace preview, footers), HandoverPrompt
   cli_errors.py    ErrorTranslator (every expected failure -> CliError sentence + Fix:)
+  cli_commands.py  the reserved-word commands: SetupCommand (cpub setup: prompts, whoami
+                   test, CredentialWriter), CheckReport + CheckCommand (cpub check); undo later
+  checks.py        EnvironmentCheck -> CheckResult facts (python, credentials, tls, auth, npx,
+                   cpub); read-only
   errors.py        PublisherError base: CliError, MissingCredentials, SpaceNotFound, NotAFolder,
                    PlanRefused, HandoverRequired, HandoverDeclined, PlanExecutionError
   config.py        Credentials (frozen: base_url, email, token, sources; mask(), token_source),
@@ -104,6 +110,7 @@ template.yaml      Stage 1 contract (stays at the root)
 markdown_html  <-  storage  <-  plan  <-  executor  <-  cli
 cli_output <- cli_errors <- cli (output/error wording never imports api, plan or config;
                                   cli_errors reads only docset's frontmatter key names)
+cli_output, cli_errors, config, checks, api <- cli_commands <- cli (never the other way round)
 docset <- plan; plan reads only constants from api; cli imports every module (composition root)
 errors: imports nothing; config, api, docset import only errors
 storage, markdown_html: never import api — conversion stays pure and offline
